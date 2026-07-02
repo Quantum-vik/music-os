@@ -12,7 +12,12 @@ name = "music"
 path = "src/main.rs"
 
 [dependencies]
-musicos-project-service = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+musicos-core-types = { workspace = true }
+musicos-midi = { workspace = true }
+musicos-music-core = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

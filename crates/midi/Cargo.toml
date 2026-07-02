@@ -8,6 +8,14 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+musicos-core-types = { workspace = true }
+musicos-music-core = { workspace = true }
+musicos-timeline = { workspace = true }
+midly = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
 
 [lints]
 workspace = true
