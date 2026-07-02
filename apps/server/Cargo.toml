@@ -1,0 +1,18 @@
+[package]
+name = "musicos-server"
+description = "MusicOS MCP server and API host."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "music-server"
+path = "src/main.rs"
+
+[dependencies]
+musicos-project-service = { workspace = true }
+
+[lints]
+workspace = true

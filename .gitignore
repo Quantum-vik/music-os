@@ -1,0 +1,18 @@
+/target
+**/*.rs.bk
+*.pdb
+.DS_Store
+
+# Project bundles' regenerable caches (docs/08 §2)
+*.musicos/cache/
+
+# Desktop app (Phase 5)
+node_modules/
+dist/
+
+# Python tooling
+.venv/
+__pycache__/
+
+# Local benchmark scratch (tracked results live in benchmarks/results/)
+criterion/

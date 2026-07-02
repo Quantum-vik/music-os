@@ -1,0 +1,13 @@
+[package]
+name = "musicos-plugin-host"
+description = "Plugin discovery, lifecycle management, and hosted plugin adapters."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

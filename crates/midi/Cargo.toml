@@ -1,0 +1,13 @@
+[package]
+name = "musicos-midi"
+description = "Standard MIDI File import/export and internal pattern mapping."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

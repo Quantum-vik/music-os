@@ -1,0 +1,15 @@
+[package]
+name = "musicos-sdk"
+description = "Stable Rust façade over MusicOS services. The semver promise lives here."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+musicos-core-types = { workspace = true }
+musicos-project-service = { workspace = true }
+
+[lints]
+workspace = true

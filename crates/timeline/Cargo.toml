@@ -1,0 +1,13 @@
+[package]
+name = "musicos-timeline"
+description = "Musical timeline: tempo maps, time signatures, and tick/sample conversion."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

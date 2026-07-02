@@ -1,0 +1,32 @@
+# cargo-deny configuration (see docs/01 NFR-8). Tightened as real deps land.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+]
+# GPL-family deliberately absent: the VST3 host crate will carry its own
+# exception when it lands (docs/09 §3), isolated from the rest of the graph.
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

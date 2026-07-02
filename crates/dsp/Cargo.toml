@@ -1,0 +1,13 @@
+[package]
+name = "musicos-dsp"
+description = "DSP processors: EQ, dynamics, delay, reverb, and utility kernels."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

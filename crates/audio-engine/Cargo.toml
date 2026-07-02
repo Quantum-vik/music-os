@@ -1,0 +1,13 @@
+[package]
+name = "musicos-audio-engine"
+description = "Real-time audio runtime: transport, graph execution, and voice management."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
