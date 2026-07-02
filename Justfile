@@ -38,7 +38,7 @@ audit:
     cargo deny check
 
 docs:
-    cargo doc --workspace --no-deps
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
 bench:
     cargo bench --workspace

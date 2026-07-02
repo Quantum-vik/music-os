@@ -30,7 +30,7 @@ pub struct ToolSpec {
 
 /// An open project plus everything a tool needs to act on it.
 ///
-/// Mutating tools go through [`ProjectCtx::commit`], which persists state and
+/// Mutating tools go through the private `commit` helper, which persists state and
 /// appends the transaction to the bundle log — tools cannot forget to persist.
 pub struct ProjectCtx {
     session: ProjectSession,

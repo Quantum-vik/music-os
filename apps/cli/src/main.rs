@@ -38,7 +38,7 @@ struct Cli {
 enum Command {
     /// Create a new project bundle.
     Init {
-        /// Project name; the bundle is created at <name>.musicos unless --dir is given.
+        /// Project name; the bundle is created at `<name>.musicos` unless --dir is given.
         name: String,
         /// Explicit bundle directory to create.
         #[arg(long)]
