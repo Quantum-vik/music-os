@@ -18,6 +18,9 @@ clap = { workspace = true }
 musicos-core-types = { workspace = true }
 musicos-midi = { workspace = true }
 musicos-music-core = { workspace = true }
+musicos-project-model = { workspace = true }
+musicos-storage = { workspace = true }
+musicos-tools = { workspace = true }
 serde_json = { workspace = true }
 
 [lints]

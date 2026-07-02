@@ -34,6 +34,9 @@ musicos-music-core = { path = "crates/music-core" }
 musicos-harmony = { path = "crates/harmony" }
 musicos-timeline = { path = "crates/timeline" }
 musicos-midi = { path = "crates/midi" }
+musicos-project-model = { path = "crates/project-model" }
+musicos-storage = { path = "crates/storage" }
+musicos-tools = { path = "crates/tools" }
 musicos-project-service = { path = "crates/project-service" }
 
 [workspace.lints.rust]

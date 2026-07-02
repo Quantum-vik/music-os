@@ -1,16 +1,21 @@
 //! MusicOS command-line client (`music`).
 //!
-//! Phase 1 milestone 1: real symbolic operations on Standard MIDI Files.
-//! Commands will migrate onto the tool registry (`docs/02` §4) when it lands,
-//! so every command here is already shaped like a tool: typed input, typed
-//! output, `--json` mode, machine-readable errors (FR-CLI2).
+//! Project commands dispatch through the canonical tool registry
+//! (`docs/02` §4) — the same tools the MCP server publishes in Phase 3, so the
+//! CLI and MCP surfaces cannot drift apart. File-level MIDI utilities live
+//! under `music midi …`. Every command supports `--json` and exits non-zero
+//! with a machine-readable error code on failure (FR-CLI2).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use musicos_core_types::{Seed, Tick};
+use musicos_core_types::{ProjectId, Seed, Tick};
 use musicos_midi::{export_smf, import_smf, SmfSong};
+use musicos_project_model::ProjectState;
+use musicos_storage::BundleStore;
+use musicos_tools::{ProjectCtx, Registry};
+use serde_json::{json, Value};
 
 #[derive(Parser)]
 #[command(
@@ -22,12 +27,72 @@ struct Cli {
     /// Emit machine-readable JSON on stdout.
     #[arg(long, global = true)]
     json: bool,
+    /// Project bundle directory (defaults to the single *.musicos in cwd).
+    #[arg(short = 'P', long, global = true)]
+    project: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// Create a new project bundle.
+    Init {
+        /// Project name; the bundle is created at <name>.musicos unless --dir is given.
+        name: String,
+        /// Explicit bundle directory to create.
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+    /// Show a summary of the project.
+    Info,
+    /// Track operations.
+    #[command(subcommand)]
+    Track(TrackCmd),
+    /// Import a .mid file: each MIDI track becomes a project track with one clip.
+    Import {
+        /// Input .mid file.
+        input: PathBuf,
+        /// Timeline position in ticks (960 PPQ).
+        #[arg(long, default_value_t = 0)]
+        at: i64,
+    },
+    /// Set the project tempo.
+    Tempo {
+        /// Beats per minute.
+        bpm: f64,
+        /// Timeline position in ticks.
+        #[arg(long, default_value_t = 0)]
+        at: i64,
+    },
+    /// Undo the most recent project transaction.
+    Undo,
+    /// List every registered tool and its JSON input schema.
+    Tools,
+    /// File-level MIDI utilities (no project needed).
+    #[command(subcommand)]
+    Midi(MidiCmd),
+}
+
+#[derive(Subcommand)]
+enum TrackCmd {
+    /// Add a track.
+    Add {
+        /// Track name.
+        name: String,
+        /// Track kind: midi | audio | bus.
+        #[arg(long, default_value = "midi")]
+        kind: String,
+    },
+    /// Remove a track by id.
+    Remove {
+        /// Track id (see `music info`).
+        id: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum MidiCmd {
     /// Show summary information about a MIDI file.
     Info {
         /// Input .mid file.
@@ -40,7 +105,7 @@ enum Command {
         /// Output .mid file.
         #[arg(short, long)]
         output: PathBuf,
-        /// Semitones to transpose by (negative = down).
+        /// Semitones (negative = down).
         #[arg(short, long, allow_hyphen_values = true)]
         semitones: i8,
     },
@@ -54,7 +119,7 @@ enum Command {
         /// Grid size in ticks (960 = quarter note, 240 = sixteenth).
         #[arg(short, long, default_value_t = 240)]
         grid: i64,
-        /// Quantize strength in percent (100 = full snap).
+        /// Strength percent (100 = full snap).
         #[arg(long, default_value_t = 100)]
         strength: u8,
     },
@@ -65,7 +130,7 @@ enum Command {
         /// Output .mid file.
         #[arg(short, long)]
         output: PathBuf,
-        /// Random seed — the same seed always produces the same result.
+        /// Random seed — same seed, same result.
         #[arg(long, default_value_t = 0)]
         seed: u64,
         /// Maximum timing jitter in ticks.
@@ -83,29 +148,112 @@ fn main() -> ExitCode {
         Ok(report) => {
             if cli.json {
                 println!("{report}");
+            } else if let Some(s) = report.get("summary").and_then(Value::as_str) {
+                println!("{s}");
             } else {
-                let v: serde_json::Value =
-                    serde_json::from_str(&report).expect("report is valid JSON");
-                if let Some(s) = v.get("summary").and_then(|s| s.as_str()) {
-                    println!("{s}");
-                }
+                println!("{report:#}");
             }
             ExitCode::SUCCESS
         }
         Err(err) => {
+            let (code, message) = match err.downcast_ref::<musicos_tools::ToolError>() {
+                Some(te) => (te.code, te.message.clone()),
+                None => ("E_CLI", err.to_string()),
+            };
             if cli.json {
-                eprintln!("{}", serde_json::json!({ "error": err.to_string() }));
+                eprintln!(
+                    "{}",
+                    json!({ "error": { "code": code, "message": message } })
+                );
             } else {
-                eprintln!("error: {err}");
+                eprintln!("error [{code}]: {message}");
             }
             ExitCode::FAILURE
         }
     }
 }
 
-fn run(cli: &Cli) -> anyhow::Result<String> {
+fn run(cli: &Cli) -> anyhow::Result<Value> {
     match &cli.command {
-        Command::Info { input } => {
+        Command::Init { name, dir } => {
+            let dir = dir
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(format!("{name}.musicos")));
+            let id = ProjectId(rand_id());
+            BundleStore::create(&dir, &ProjectState::new(id, name))?;
+            Ok(json!({
+                "path": dir.display().to_string(),
+                "summary": format!("created project '{name}' at {}", dir.display()),
+            }))
+        }
+        Command::Info => call_tool(cli, "get_project_summary", json!({})),
+        Command::Track(TrackCmd::Add { name, kind }) => {
+            call_tool(cli, "add_track", json!({ "name": name, "kind": kind }))
+        }
+        Command::Track(TrackCmd::Remove { id }) => {
+            call_tool(cli, "remove_track", json!({ "track_id": id }))
+        }
+        Command::Import { input, at } => call_tool(
+            cli,
+            "import_midi",
+            json!({ "path": input.display().to_string(), "at": at }),
+        ),
+        Command::Tempo { bpm, at } => call_tool(cli, "set_tempo", json!({ "bpm": bpm, "at": at })),
+        Command::Undo => call_tool(cli, "undo", json!({})),
+        Command::Tools => {
+            let specs: Vec<Value> = Registry::new()
+                .specs()
+                .iter()
+                .map(|s| {
+                    json!({
+                        "name": s.name, "description": s.description, "params": s.params_schema,
+                    })
+                })
+                .collect();
+            let names: Vec<&str> = Registry::new().specs().iter().map(|s| s.name).collect();
+            Ok(json!({
+                "tools": specs,
+                "summary": format!("{} tools: {}", names.len(), names.join(", ")),
+            }))
+        }
+        Command::Midi(cmd) => run_midi(cmd),
+    }
+}
+
+fn call_tool(cli: &Cli, name: &str, input: Value) -> anyhow::Result<Value> {
+    let path = resolve_project(cli.project.as_deref())?;
+    let mut ctx = ProjectCtx::open(&path, "user:cli")?;
+    Ok(Registry::new().call(name, &mut ctx, input)?)
+}
+
+/// Uses `--project` if given, otherwise the single `*.musicos` directory in cwd.
+fn resolve_project(flag: Option<&Path>) -> anyhow::Result<PathBuf> {
+    if let Some(p) = flag {
+        return Ok(p.to_path_buf());
+    }
+    let bundles: Vec<PathBuf> = std::fs::read_dir(".")?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && p.extension().is_some_and(|e| e == "musicos"))
+        .collect();
+    match bundles.as_slice() {
+        [one] => Ok(one.clone()),
+        [] => anyhow::bail!("no .musicos project here — run `music init <name>` or pass -P <dir>"),
+        _ => anyhow::bail!("multiple .musicos projects here — pass -P <dir>"),
+    }
+}
+
+/// Non-cryptographic id from system entropy (UUID backing lands in Phase 1 M3).
+fn rand_id() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish()
+}
+
+fn run_midi(cmd: &MidiCmd) -> anyhow::Result<Value> {
+    match cmd {
+        MidiCmd::Info { input } => {
             let song = load(input)?;
             let notes: usize = song.tracks.iter().map(|(_, p)| p.notes().len()).sum();
             let end = song
@@ -117,27 +265,25 @@ fn run(cli: &Cli) -> anyhow::Result<String> {
             let micros = song.tempo_map.tick_to_micros(end);
             #[allow(clippy::cast_precision_loss)] // display only; songs are << 2^52 µs
             let seconds = micros as f64 / 1e6;
-            Ok(serde_json::json!({
-                "tracks": song.tracks.iter().map(|(name, p)| serde_json::json!({
+            Ok(json!({
+                "tracks": song.tracks.iter().map(|(name, p)| json!({
                     "name": name, "notes": p.notes().len(), "length_ticks": p.length().0,
                 })).collect::<Vec<_>>(),
                 "tempo_bpm": song.tempo_map.tempo_at(Tick::ZERO).bpm(),
-                "tempo_changes": song.tempo_map.entries().len(),
                 "duration_seconds": seconds,
                 "summary": format!(
                     "{} track(s), {notes} notes, {seconds:.1}s at {:.1} BPM",
                     song.tracks.len(),
                     song.tempo_map.tempo_at(Tick::ZERO).bpm(),
                 ),
-            })
-            .to_string())
+            }))
         }
-        Command::Transpose {
+        MidiCmd::Transpose {
             input,
             output,
             semitones,
         } => transform(input, output, "transposed", |p| p.transposed(*semitones)),
-        Command::Quantize {
+        MidiCmd::Quantize {
             input,
             output,
             grid,
@@ -148,7 +294,7 @@ fn run(cli: &Cli) -> anyhow::Result<String> {
                 p.quantized(Tick(*grid), *strength)
             })
         }
-        Command::Humanize {
+        MidiCmd::Humanize {
             input,
             output,
             seed,
@@ -161,11 +307,11 @@ fn run(cli: &Cli) -> anyhow::Result<String> {
 }
 
 fn transform(
-    input: &PathBuf,
-    output: &PathBuf,
+    input: &Path,
+    output: &Path,
     verb: &str,
     f: impl Fn(&musicos_music_core::Pattern) -> musicos_music_core::Pattern,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<Value> {
     let mut song = load(input)?;
     let mut notes = 0usize;
     for (_, pattern) in &mut song.tracks {
@@ -173,17 +319,16 @@ fn transform(
         notes += pattern.notes().len();
     }
     std::fs::write(output, export_smf(&song))?;
-    Ok(serde_json::json!({
+    Ok(json!({
         "output": output.display().to_string(),
         "tracks": song.tracks.len(),
         "notes": notes,
         "summary": format!("{verb} {notes} notes across {} track(s) -> {}",
             song.tracks.len(), output.display()),
-    })
-    .to_string())
+    }))
 }
 
-fn load(path: &PathBuf) -> anyhow::Result<SmfSong> {
+fn load(path: &Path) -> anyhow::Result<SmfSong> {
     let bytes =
         std::fs::read(path).map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
     Ok(import_smf(&bytes)?)

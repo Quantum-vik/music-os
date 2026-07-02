@@ -13,6 +13,7 @@ name = "music-server"
 path = "src/main.rs"
 
 [dependencies]
+musicos-core-types = { workspace = true }
 musicos-project-service = { workspace = true }
 
 [lints]

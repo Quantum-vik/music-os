@@ -52,6 +52,43 @@ impl TempoMap {
         &self.entries
     }
 
+    /// Sets (adds or replaces) the tempo entry at exactly `at`, returning the
+    /// entry it replaced, if any.
+    ///
+    /// # Errors
+    /// Returns [`TimelineError::NegativeTick`] if `at` is negative.
+    pub fn set(&mut self, at: Tick, tempo: Tempo) -> Result<Option<Tempo>, TimelineError> {
+        if at < Tick::ZERO {
+            return Err(TimelineError::NegativeTick);
+        }
+        match self.entries.binary_search_by_key(&at, |(t, _)| *t) {
+            Ok(i) => {
+                let prev = self.entries[i].1;
+                self.entries[i].1 = tempo;
+                Ok(Some(prev))
+            }
+            Err(i) => {
+                self.entries.insert(i, (at, tempo));
+                Ok(None)
+            }
+        }
+    }
+
+    /// Removes the tempo entry at exactly `at`, returning it.
+    ///
+    /// # Errors
+    /// Returns [`TimelineError::NoOrigin`] when asked to remove the origin
+    /// entry (an entry at tick 0 must always exist — invariant TM1).
+    pub fn remove(&mut self, at: Tick) -> Result<Option<Tempo>, TimelineError> {
+        if at == Tick::ZERO {
+            return Err(TimelineError::NoOrigin);
+        }
+        match self.entries.binary_search_by_key(&at, |(t, _)| *t) {
+            Ok(i) => Ok(Some(self.entries.remove(i).1)),
+            Err(_) => Ok(None),
+        }
+    }
+
     /// Tempo in effect at `at`.
     pub fn tempo_at(&self, at: Tick) -> Tempo {
         match self.entries.binary_search_by_key(&at, |(t, _)| *t) {
@@ -196,5 +233,23 @@ mod tests {
             .unwrap_err(),
             TimelineError::DuplicateTick
         );
+    }
+
+    #[test]
+    fn set_and_remove_preserve_invariants() {
+        let mut map = TempoMap::default();
+        let slow = Tempo {
+            micros_per_quarter: 1_000_000,
+        };
+        assert_eq!(map.set(Tick(PPQ), slow).unwrap(), None);
+        assert_eq!(map.set(Tick(PPQ), Tempo::DEFAULT).unwrap(), Some(slow));
+        assert_eq!(map.remove(Tick(PPQ)).unwrap(), Some(Tempo::DEFAULT));
+        assert_eq!(map.remove(Tick(PPQ)).unwrap(), None);
+        assert_eq!(map.remove(Tick::ZERO).unwrap_err(), TimelineError::NoOrigin);
+        assert_eq!(
+            map.set(Tick(-1), slow).unwrap_err(),
+            TimelineError::NegativeTick
+        );
+        assert_eq!(map.entries().len(), 1); // origin intact
     }
 }
