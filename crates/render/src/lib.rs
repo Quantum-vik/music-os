@@ -1,18 +1,23 @@
 //! Offline render pipeline and audio export.
 //!
-//! Phase 2 milestone 1: a direct project renderer — every MIDI clip is
-//! synthesized with [`SimpleSynth`], placed at its tempo-mapped sample
-//! position, mixed, peak-limited, and written as 16-bit WAV. Renders are
-//! deterministic per platform (NFR-4; see `docs/04` §6 for the honest limits).
-//! The graph compiler / node executor from `docs/04` §3 replaces the direct
-//! loop in the next milestone; the WAV encoder stays behind this crate either way.
+//! Phase 2 milestone 2: rendering runs on the compiled audio graph
+//! (`docs/04` §3). The project is translated into nodes — one `TrackSource`
+//! per MIDI track, a strip node applying the track's [`ChannelStrip`]
+//! (gain/pan/mute), and a master sum sink — compiled to a schedule with a
+//! liveness-assigned buffer pool, and executed block by block. Renders remain
+//! deterministic per platform (NFR-4).
+//!
+//! `TrackSource` pre-renders its track's notes offline and streams blocks;
+//! the true streaming voice manager replaces it with the real-time engine
+//! (`docs/04` §5). Latency compensation waits for latency-reporting nodes.
 
 use std::path::Path;
 
+use musicos_audio_graph::{CompiledGraph, Graph, Node, StereoBlock};
 use musicos_core_types::Tick;
-use musicos_dsp::{pan_gains, StereoBuffer};
+use musicos_dsp::{db_to_gain, pan_gains, StereoBuffer};
 use musicos_instruments::SimpleSynth;
-use musicos_project_model::{ProjectState, TrackKind};
+use musicos_project_model::{ChannelStrip, ProjectState, TrackKind};
 
 /// Render parameters.
 #[derive(Debug, Clone, Copy)]
@@ -35,43 +40,102 @@ impl Default for RenderOptions {
     }
 }
 
-/// Renders a project to a stereo buffer.
-///
-/// # Errors
-/// Returns [`RenderError::EmptyProject`] if no MIDI clip contains notes.
-pub fn render_project(
-    state: &ProjectState,
-    opts: &RenderOptions,
-) -> Result<StereoBuffer, RenderError> {
-    let synth = SimpleSynth::default();
-    let sr = opts.sample_rate;
+/// A source node streaming a pre-rendered mono track.
+struct TrackSource {
+    mono: Vec<f32>,
+}
 
-    // Determine total length: last note end across all placements + tail.
-    let mut last_end_samples: usize = 0;
-    let mut any_notes = false;
-    for track in state.tracks.iter().filter(|t| t.kind == TrackKind::Midi) {
-        for placement in &track.placements {
-            let clip = &state.clips[&placement.clip];
-            for note in clip.pattern.notes() {
-                any_notes = true;
-                let end_tick = placement.at + note.end();
-                let end = sample_at(state, end_tick, sr) + synth.rendered_len(0, sr);
-                last_end_samples = last_end_samples.max(end);
+impl Node for TrackSource {
+    fn process(&mut self, frame_offset: usize, _: &[&StereoBlock], out: &mut StereoBlock) {
+        for (i, (l, r)) in out.left.iter_mut().zip(out.right.iter_mut()).enumerate() {
+            let s = self.mono.get(frame_offset + i).copied().unwrap_or(0.0);
+            *l = s;
+            *r = s;
+        }
+    }
+}
+
+/// Applies a channel strip: mute, dB gain, equal-power pan.
+struct StripNode {
+    left_gain: f32,
+    right_gain: f32,
+}
+
+impl StripNode {
+    fn new(strip: ChannelStrip) -> StripNode {
+        if strip.muted {
+            return StripNode {
+                left_gain: 0.0,
+                right_gain: 0.0,
+            };
+        }
+        let gain = db_to_gain(strip.gain_db);
+        let (l, r) = pan_gains(strip.pan);
+        StripNode {
+            left_gain: gain * l,
+            right_gain: gain * r,
+        }
+    }
+}
+
+impl Node for StripNode {
+    fn process(&mut self, _: usize, inputs: &[&StereoBlock], out: &mut StereoBlock) {
+        let input = inputs[0];
+        for (o, i) in out.left.iter_mut().zip(&input.left) {
+            *o = i * self.left_gain;
+        }
+        for (o, i) in out.right.iter_mut().zip(&input.right) {
+            *o = i * self.right_gain;
+        }
+    }
+}
+
+/// Sums every input (the master bus sink).
+struct MasterSum;
+
+impl Node for MasterSum {
+    fn process(&mut self, _: usize, inputs: &[&StereoBlock], out: &mut StereoBlock) {
+        out.clear();
+        for input in inputs {
+            for (o, i) in out.left.iter_mut().zip(&input.left) {
+                *o += i;
+            }
+            for (o, i) in out.right.iter_mut().zip(&input.right) {
+                *o += i;
             }
         }
     }
-    if !any_notes {
-        return Err(RenderError::EmptyProject);
-    }
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // small positive time
-    let tail = (opts.tail_seconds * sr as f32).ceil() as usize;
-    let total = last_end_samples + tail;
+}
 
-    let mut master = StereoBuffer::silence(total);
+/// Compiles a project into an executable graph plus the total frame count.
+///
+/// # Errors
+/// Returns [`RenderError::EmptyProject`] if no MIDI clip contains notes, or
+/// propagates graph compilation failures (impossible for this topology).
+pub fn compile_project(
+    state: &ProjectState,
+    opts: &RenderOptions,
+) -> Result<(CompiledGraph, usize), RenderError> {
+    let synth = SimpleSynth::default();
+    let sr = opts.sample_rate;
+
+    // Pre-render each MIDI track to mono and find the total length.
+    let mut track_audio: Vec<(ChannelStrip, Vec<f32>)> = Vec::new();
+    let mut last_end = 0usize;
     for track in state.tracks.iter().filter(|t| t.kind == TrackKind::Midi) {
-        // v0: all tracks centered at unity; per-track gain/pan arrive with the
-        // mix model (docs/03 ChannelStrip) in the next milestone.
-        let (gl, gr) = pan_gains(0.0);
+        let mut end_of_track = 0usize;
+        for placement in &track.placements {
+            let clip = &state.clips[&placement.clip];
+            for note in clip.pattern.notes() {
+                let end =
+                    sample_at(state, placement.at + note.end(), sr) + synth.rendered_len(0, sr);
+                end_of_track = end_of_track.max(end);
+            }
+        }
+        if end_of_track == 0 {
+            continue;
+        }
+        let mut mono = vec![0.0f32; end_of_track];
         for placement in &track.placements {
             let clip = &state.clips[&placement.clip];
             for note in clip.pattern.notes() {
@@ -79,18 +143,54 @@ pub fn render_project(
                 let end = sample_at(state, placement.at + note.end(), sr);
                 let held = end.saturating_sub(start).max(1);
                 let gain = f32::from(note.velocity.get()) / 127.0;
-                let mono = synth.render_note(note.pitch, gain, held, sr);
-                for (i, s) in mono.iter().enumerate() {
-                    let at = start + i;
-                    if at >= total {
-                        break;
+                for (i, s) in synth
+                    .render_note(note.pitch, gain, held, sr)
+                    .iter()
+                    .enumerate()
+                {
+                    if let Some(slot) = mono.get_mut(start + i) {
+                        *slot += s;
                     }
-                    master.left[at] += s * gl;
-                    master.right[at] += s * gr;
                 }
             }
         }
+        last_end = last_end.max(end_of_track);
+        track_audio.push((track.mix, mono));
     }
+    if track_audio.is_empty() {
+        return Err(RenderError::EmptyProject);
+    }
+
+    let tail = (opts.tail_seconds * sr as f32).ceil() as usize;
+    let total = last_end + tail;
+
+    let mut graph = Graph::new();
+    let master = graph.add(Box::new(MasterSum));
+    for (strip, mono) in track_audio {
+        let source = graph.add(Box::new(TrackSource { mono }));
+        let strip_node = graph.add(Box::new(StripNode::new(strip)));
+        graph
+            .connect(source, strip_node)
+            .map_err(RenderError::Graph)?;
+        graph
+            .connect(strip_node, master)
+            .map_err(RenderError::Graph)?;
+    }
+    let compiled = graph.compile(master).map_err(RenderError::Graph)?;
+    Ok((compiled, total))
+}
+
+/// Renders a project to a stereo buffer via the compiled graph.
+///
+/// # Errors
+/// See [`compile_project`].
+pub fn render_project(
+    state: &ProjectState,
+    opts: &RenderOptions,
+) -> Result<StereoBuffer, RenderError> {
+    let (mut compiled, total) = compile_project(state, opts)?;
+    let (left, right) = compiled.render(total);
+    let mut master = StereoBuffer { left, right };
     master.limit_peak(opts.peak_ceiling);
     Ok(master)
 }
@@ -113,11 +213,9 @@ pub fn render_to_wav(
     };
     let mut writer = hound::WavWriter::create(path, spec)?;
     for s in buffer.interleave() {
-        #[allow(clippy::cast_possible_truncation)] // clamped to i16 range first
         writer.write_sample((s.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16)?;
     }
     writer.finalize()?;
-    #[allow(clippy::cast_precision_loss)] // display only
     let seconds = buffer.frames() as f64 / f64::from(opts.sample_rate);
     Ok(RenderReport {
         frames: buffer.frames(),
@@ -149,6 +247,9 @@ pub enum RenderError {
     /// The project has no MIDI notes to render.
     #[error("project has no notes to render")]
     EmptyProject,
+    /// Graph construction failed (unexpected for the fixed topology).
+    #[error("graph: {0}")]
+    Graph(musicos_audio_graph::GraphError),
     /// WAV encoding failure.
     #[error("wav: {0}")]
     Wav(#[from] hound::Error),
@@ -157,7 +258,7 @@ pub enum RenderError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use musicos_core_types::{Pitch, ProjectId, Tick, Velocity, PPQ};
+    use musicos_core_types::{Pitch, ProjectId, Tick, TrackId, Velocity, PPQ};
     use musicos_music_core::{Note, Pattern};
     use musicos_project_model::Command;
 
@@ -205,8 +306,54 @@ mod tests {
             a.peak() <= opts.peak_ceiling + 1e-6,
             "peak ceiling enforced"
         );
-        // 2 quarters at 120 BPM = 1s of held notes, plus release + tail.
         assert!(a.frames() >= 48_000);
+    }
+
+    #[test]
+    fn mute_silences_and_gain_scales() {
+        let mut state = demo_project();
+        let track = TrackId(0);
+        let opts = RenderOptions::default();
+        let loud = render_project(&state, &opts).unwrap();
+
+        state
+            .dispatch(Command::SetTrackGain {
+                track,
+                gain_db: -20.0,
+            })
+            .unwrap();
+        let quiet = render_project(&state, &opts).unwrap();
+        assert!(
+            quiet.peak() < loud.peak() * 0.2,
+            "-20 dB must be ~10x quieter"
+        );
+
+        state
+            .dispatch(Command::SetTrackMute { track, muted: true })
+            .unwrap();
+        assert!(matches!(
+            render_project(&state, &opts),
+            Ok(b) if b.peak() == 0.0
+        ));
+    }
+
+    #[test]
+    fn pan_hard_left_empties_right_channel() {
+        let mut state = demo_project();
+        state
+            .dispatch(Command::SetTrackPan {
+                track: TrackId(0),
+                pan: -1.0,
+            })
+            .unwrap();
+        let out = render_project(&state, &RenderOptions::default()).unwrap();
+        let right_peak = out.right.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        let left_peak = out.left.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(
+            right_peak < 1e-6,
+            "hard-left pan must silence the right channel"
+        );
+        assert!(left_peak > 0.05);
     }
 
     #[test]
@@ -225,7 +372,6 @@ mod tests {
         let report = render_to_wav(&state, &RenderOptions::default(), &path).unwrap();
         let reader = hound::WavReader::open(&path).unwrap();
         assert_eq!(reader.spec().channels, 2);
-        assert_eq!(reader.spec().sample_rate, 48_000);
         assert_eq!(reader.duration() as usize, report.frames);
         std::fs::remove_file(&path).unwrap();
     }

@@ -67,6 +67,20 @@ enum Command {
     },
     /// Undo the most recent project transaction.
     Undo,
+    /// Set track mix parameters (gain/pan/mute).
+    Mix {
+        /// Track id (see `music info`).
+        track: u64,
+        /// Gain in dB.
+        #[arg(long, allow_hyphen_values = true)]
+        gain: Option<f32>,
+        /// Pan, -1.0 (left) to 1.0 (right).
+        #[arg(long, allow_hyphen_values = true)]
+        pan: Option<f32>,
+        /// Mute (true/false).
+        #[arg(long)]
+        mute: Option<bool>,
+    },
     /// Render the project to a WAV file with the built-in synthesizer.
     Render {
         /// Output .wav path.
@@ -209,6 +223,16 @@ fn run(cli: &Cli) -> anyhow::Result<Value> {
         ),
         Command::Tempo { bpm, at } => call_tool(cli, "set_tempo", json!({ "bpm": bpm, "at": at })),
         Command::Undo => call_tool(cli, "undo", json!({})),
+        Command::Mix {
+            track,
+            gain,
+            pan,
+            mute,
+        } => call_tool(
+            cli,
+            "set_track_mix",
+            json!({ "track_id": track, "gain_db": gain, "pan": pan, "muted": mute }),
+        ),
         Command::Render { output, rate } => call_tool(
             cli,
             "render_song",

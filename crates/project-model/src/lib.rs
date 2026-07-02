@@ -47,8 +47,33 @@ pub struct Placement {
     pub at: Tick,
 }
 
-/// A track: name, kind, and clip placements.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Per-track mix settings (`docs/03` §3 `ChannelStrip`; inserts and sends land
+/// with the bus/mix-graph milestone).
+///
+/// `#[serde(default)]` keeps bundles written before this field readable —
+/// the forward-tolerance rule from `docs/08` §5.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ChannelStrip {
+    /// Gain in decibels (0.0 = unity). Valid range −96.0..=12.0.
+    pub gain_db: f32,
+    /// Pan position −1.0 (left) ..= 1.0 (right); equal-power law at render.
+    pub pan: f32,
+    /// Muted tracks produce silence.
+    pub muted: bool,
+}
+
+impl Default for ChannelStrip {
+    fn default() -> Self {
+        ChannelStrip {
+            gain_db: 0.0,
+            pan: 0.0,
+            muted: false,
+        }
+    }
+}
+
+/// A track: name, kind, mix settings, and clip placements.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Track {
     /// Stable track identifier.
     pub id: TrackId,
@@ -56,6 +81,9 @@ pub struct Track {
     pub name: String,
     /// Content kind.
     pub kind: TrackKind,
+    /// Mix settings.
+    #[serde(default)]
+    pub mix: ChannelStrip,
     /// Clips placed on this track, in insertion order.
     pub placements: Vec<Placement>,
 }
@@ -70,7 +98,7 @@ pub struct Clip {
 }
 
 /// The project aggregate root. See the crate docs for the mutation contract.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectState {
     /// Identity and format metadata.
     pub meta: ProjectMeta,
@@ -142,6 +170,7 @@ impl ProjectState {
                         id,
                         name,
                         kind,
+                        mix: ChannelStrip::default(),
                         placements: Vec::new(),
                     },
                     index: self.tracks.len(),
@@ -212,6 +241,36 @@ impl ProjectState {
                     clip,
                     from: placement.at,
                     to: at,
+                }])
+            }
+            Command::SetTrackGain { track, gain_db } => {
+                if !(-96.0..=12.0).contains(&gain_db) {
+                    return Err(DomainError::OutOfRange("gain_db", -96.0, 12.0));
+                }
+                let t = self.track(track)?;
+                Ok(vec![Event::TrackGainSet {
+                    track,
+                    from: t.mix.gain_db,
+                    to: gain_db,
+                }])
+            }
+            Command::SetTrackPan { track, pan } => {
+                if !(-1.0..=1.0).contains(&pan) {
+                    return Err(DomainError::OutOfRange("pan", -1.0, 1.0));
+                }
+                let t = self.track(track)?;
+                Ok(vec![Event::TrackPanSet {
+                    track,
+                    from: t.mix.pan,
+                    to: pan,
+                }])
+            }
+            Command::SetTrackMute { track, muted } => {
+                let t = self.track(track)?;
+                Ok(vec![Event::TrackMuteSet {
+                    track,
+                    from: t.mix.muted,
+                    to: muted,
                 }])
             }
             Command::SetTempo { at, tempo } => {
@@ -287,6 +346,15 @@ impl ProjectState {
                     .find(|p| p.clip == *clip)
                     .ok_or(DomainError::UnknownClip(*clip))?;
                 p.at = *to;
+            }
+            Event::TrackGainSet { track, to, .. } => {
+                self.track_mut(*track)?.mix.gain_db = *to;
+            }
+            Event::TrackPanSet { track, to, .. } => {
+                self.track_mut(*track)?.mix.pan = *to;
+            }
+            Event::TrackMuteSet { track, to, .. } => {
+                self.track_mut(*track)?.mix.muted = *to;
             }
             Event::TempoSet { at, to, .. } => {
                 self.tempo_map
@@ -391,6 +459,27 @@ pub enum Command {
         /// New timeline position.
         at: Tick,
     },
+    /// Set a track's gain in decibels (−96.0..=12.0).
+    SetTrackGain {
+        /// Target track.
+        track: TrackId,
+        /// New gain in dB.
+        gain_db: f32,
+    },
+    /// Set a track's pan position (−1.0..=1.0).
+    SetTrackPan {
+        /// Target track.
+        track: TrackId,
+        /// New pan position.
+        pan: f32,
+    },
+    /// Mute or unmute a track.
+    SetTrackMute {
+        /// Target track.
+        track: TrackId,
+        /// New mute state.
+        muted: bool,
+    },
     /// Set (or add) a tempo change at a position.
     SetTempo {
         /// Timeline position of the tempo change.
@@ -470,6 +559,33 @@ pub enum Event {
         /// New position.
         to: Tick,
     },
+    /// A track's gain changed.
+    TrackGainSet {
+        /// Target track.
+        track: TrackId,
+        /// Previous gain (dB).
+        from: f32,
+        /// New gain (dB).
+        to: f32,
+    },
+    /// A track's pan changed.
+    TrackPanSet {
+        /// Target track.
+        track: TrackId,
+        /// Previous pan.
+        from: f32,
+        /// New pan.
+        to: f32,
+    },
+    /// A track's mute state changed.
+    TrackMuteSet {
+        /// Target track.
+        track: TrackId,
+        /// Previous state.
+        from: bool,
+        /// New state.
+        to: bool,
+    },
     /// A tempo entry was set (added or changed).
     TempoSet {
         /// Timeline position.
@@ -547,6 +663,21 @@ impl Event {
                 from: *to,
                 to: *from,
             },
+            Event::TrackGainSet { track, from, to } => Event::TrackGainSet {
+                track: *track,
+                from: *to,
+                to: *from,
+            },
+            Event::TrackPanSet { track, from, to } => Event::TrackPanSet {
+                track: *track,
+                from: *to,
+                to: *from,
+            },
+            Event::TrackMuteSet { track, from, to } => Event::TrackMuteSet {
+                track: *track,
+                from: *to,
+                to: *from,
+            },
             Event::TempoSet { at, from, to } => match from {
                 Some(prev) => Event::TempoSet {
                     at: *at,
@@ -606,7 +737,7 @@ impl Event {
 }
 
 /// Errors from command validation or event replay.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DomainError {
     /// A name was empty or whitespace-only.
@@ -624,6 +755,9 @@ pub enum DomainError {
     /// Bus tracks hold no clips.
     #[error("bus track {0:?} cannot hold clips")]
     BusHoldsNoClips(TrackId),
+    /// A numeric parameter was outside its valid range.
+    #[error("{0} must be within {1}..={2}")]
+    OutOfRange(&'static str, f32, f32),
     /// A timeline map invariant was violated.
     #[error("timeline: {0}")]
     Timeline(musicos_timeline::TimelineError),
@@ -685,6 +819,18 @@ mod tests {
             Command::RemoveTrack { track: TrackId(0) },
             Command::RenameProject {
                 name: "Banger".into(),
+            },
+            Command::SetTrackGain {
+                track: TrackId(1),
+                gain_db: -6.0,
+            },
+            Command::SetTrackPan {
+                track: TrackId(1),
+                pan: 0.25,
+            },
+            Command::SetTrackMute {
+                track: TrackId(1),
+                muted: true,
             },
         ]
     }

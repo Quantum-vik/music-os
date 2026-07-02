@@ -393,6 +393,17 @@ fn summarize_command(cmd: &Command) -> String {
         Command::SetTempo { at, tempo } => {
             format!("set tempo {:.1} BPM at {}", tempo.bpm(), at.0)
         }
+        Command::SetTrackGain { track, gain_db } => {
+            format!("set track {} gain {gain_db:+.1} dB", track.0)
+        }
+        Command::SetTrackPan { track, pan } => format!("set track {} pan {pan:+.2}", track.0),
+        Command::SetTrackMute { track, muted } => {
+            format!(
+                "{} track {}",
+                if *muted { "mute" } else { "unmute" },
+                track.0
+            )
+        }
         _ => "command".to_string(),
     }
 }
@@ -469,6 +480,68 @@ impl Tool for RenderSong {
     }
 }
 
+// --- mix: gain / pan / mute ------------------------------------------------------
+
+/// Input for `set_track_mix`.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SetTrackMixInput {
+    /// Target track id (see `get_project_summary`).
+    track_id: u64,
+    /// Gain in dB (\u221296.0..=12.0). Omit to leave unchanged.
+    #[serde(default)]
+    gain_db: Option<f32>,
+    /// Pan (\u22121.0 left ..= 1.0 right). Omit to leave unchanged.
+    #[serde(default)]
+    pan: Option<f32>,
+    /// Mute state. Omit to leave unchanged.
+    #[serde(default)]
+    muted: Option<bool>,
+}
+
+struct SetTrackMix;
+
+impl Tool for SetTrackMix {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "set_track_mix",
+            description: "Set a track's mix parameters: gain_db, pan, and/or muted. \
+                          Each provided field is one undoable transaction.",
+            params_schema: schema::<SetTrackMixInput>(),
+        }
+    }
+
+    fn call(&self, ctx: &mut ProjectCtx, input: Value) -> Result<Value, ToolError> {
+        let input: SetTrackMixInput = parse(input)?;
+        let track = TrackId(input.track_id);
+        let mut changes = Vec::new();
+        if let Some(gain_db) = input.gain_db {
+            ctx.commit(Command::SetTrackGain { track, gain_db })?;
+            changes.push(format!("gain {gain_db:+.1} dB"));
+        }
+        if let Some(pan) = input.pan {
+            ctx.commit(Command::SetTrackPan { track, pan })?;
+            changes.push(format!("pan {pan:+.2}"));
+        }
+        if let Some(muted) = input.muted {
+            ctx.commit(Command::SetTrackMute { track, muted })?;
+            changes.push(if muted {
+                "muted".into()
+            } else {
+                "unmuted".to_string()
+            });
+        }
+        if changes.is_empty() {
+            return Err(ToolError::invalid(
+                "provide at least one of gain_db, pan, muted",
+            ));
+        }
+        Ok(json!({
+            "track_id": input.track_id,
+            "summary": format!("track {}: {}", input.track_id, changes.join(", ")),
+        }))
+    }
+}
+
 /// The canonical tool registry.
 pub struct Registry {
     tools: Vec<Box<dyn Tool>>,
@@ -485,6 +558,7 @@ impl Registry {
                 Box::new(ImportMidi),
                 Box::new(SetTempo),
                 Box::new(RenderSong),
+                Box::new(SetTrackMix),
                 Box::new(Undo),
             ],
         }

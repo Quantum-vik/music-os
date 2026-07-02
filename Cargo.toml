@@ -38,6 +38,7 @@ musicos-midi = { path = "crates/midi" }
 musicos-project-model = { path = "crates/project-model" }
 musicos-storage = { path = "crates/storage" }
 musicos-tools = { path = "crates/tools" }
+musicos-audio-graph = { path = "crates/audio-graph" }
 musicos-dsp = { path = "crates/dsp" }
 musicos-instruments = { path = "crates/instruments" }
 musicos-render = { path = "crates/render" }

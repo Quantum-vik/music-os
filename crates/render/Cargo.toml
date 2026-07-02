@@ -9,6 +9,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+musicos-audio-graph = { workspace = true }
 musicos-core-types = { workspace = true }
 musicos-dsp = { workspace = true }
 musicos-instruments = { workspace = true }

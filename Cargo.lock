@@ -289,6 +289,9 @@ version = "0.0.1"
 [[package]]
 name = "musicos-audio-graph"
 version = "0.0.1"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "musicos-cli"
@@ -403,6 +406,7 @@ name = "musicos-render"
 version = "0.0.1"
 dependencies = [
  "hound",
+ "musicos-audio-graph",
  "musicos-core-types",
  "musicos-dsp",
  "musicos-instruments",
