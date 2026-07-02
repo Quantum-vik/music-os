@@ -19,6 +19,7 @@ allow = [
     "Zlib",
     "Unicode-3.0",
     "MPL-2.0",
+    "Unlicense",     # midly
 ]
 # GPL-family deliberately absent: the VST3 host crate will carry its own
 # exception when it lands (docs/09 §3), isolated from the rest of the graph.
@@ -26,6 +27,9 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Internal `{ workspace = true }` path deps have no version and would count
+# as wildcards; this permits that for unpublished path dependencies only.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"

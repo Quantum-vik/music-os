@@ -8,6 +8,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/musicos/music-os"
 rust-version = "1.79"
+publish = false  # publishing begins in Phase 6 (docs/12); crates get versions then
 
 # Single source of truth for dependency versions. Crates opt in with
 # `dep = { workspace = true }`. Listed ahead of use so version choices are
