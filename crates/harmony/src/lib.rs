@@ -172,6 +172,149 @@ impl Chord {
     }
 }
 
+/// Parses a note name (`C`, `F#`, `Bb`, `c#`) into a pitch class.
+///
+/// # Errors
+/// Returns [`ParseError`] on anything else.
+pub fn parse_note_name(name: &str) -> Result<PitchClass, ParseError> {
+    let mut chars = name.trim().chars();
+    let letter = chars.next().ok_or_else(|| ParseError(name.to_string()))?;
+    let base: i16 = match letter.to_ascii_uppercase() {
+        'C' => 0,
+        'D' => 2,
+        'E' => 4,
+        'F' => 5,
+        'G' => 7,
+        'A' => 9,
+        'B' => 11,
+        _ => return Err(ParseError(name.to_string())),
+    };
+    let accidental: i16 = match chars.as_str() {
+        "" => 0,
+        "#" => 1,
+        "b" => -1,
+        "##" => 2,
+        "bb" => -2,
+        _ => return Err(ParseError(name.to_string())),
+    };
+    Ok(PitchClass::new(
+        u8::try_from((base + accidental).rem_euclid(12)).expect("mod 12"),
+    ))
+}
+
+/// Parses a scale kind name (`major`, `minor`, `dorian`, `harmonic_minor`, …).
+///
+/// # Errors
+/// Returns [`ParseError`] for unknown names.
+pub fn parse_scale_kind(name: &str) -> Result<ScaleKind, ParseError> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "major" | "ionian" => Ok(ScaleKind::Major),
+        "minor" | "natural_minor" | "aeolian" => Ok(ScaleKind::NaturalMinor),
+        "harmonic_minor" => Ok(ScaleKind::HarmonicMinor),
+        "melodic_minor" => Ok(ScaleKind::MelodicMinor),
+        "dorian" => Ok(ScaleKind::Dorian),
+        "mixolydian" => Ok(ScaleKind::Mixolydian),
+        "major_pentatonic" => Ok(ScaleKind::MajorPentatonic),
+        "minor_pentatonic" => Ok(ScaleKind::MinorPentatonic),
+        _ => Err(ParseError(name.to_string())),
+    }
+}
+
+impl Chord {
+    /// Parses a chord symbol: `C`, `Am`, `F#m`, `Bdim`, `Gaug`, `D7`,
+    /// `Cmaj7`, `Em7`, `Asus4` (root note name + quality suffix).
+    ///
+    /// # Errors
+    /// Returns [`ParseError`] for unknown symbols.
+    pub fn parse(symbol: &str) -> Result<Chord, ParseError> {
+        let s = symbol.trim();
+        // Longest valid note-name prefix: letter plus up to two accidentals.
+        let mut split = 1;
+        for (i, c) in s.char_indices().skip(1) {
+            if c == '#' || c == 'b' {
+                split = i + 1;
+            } else {
+                break;
+            }
+        }
+        if s.is_empty() {
+            return Err(ParseError(symbol.to_string()));
+        }
+        let root = parse_note_name(&s[..split])?;
+        let quality = match &s[split..] {
+            "" | "maj" | "M" => ChordQuality::Major,
+            "m" | "min" | "-" => ChordQuality::Minor,
+            "dim" | "o" => ChordQuality::Diminished,
+            "aug" | "+" => ChordQuality::Augmented,
+            "7" => ChordQuality::Dominant7,
+            "maj7" | "M7" => ChordQuality::Major7,
+            "m7" | "min7" => ChordQuality::Minor7,
+            "sus4" | "sus" => ChordQuality::Sus4,
+            _ => return Err(ParseError(symbol.to_string())),
+        };
+        Ok(Chord { root, quality })
+    }
+
+    /// The canonical symbol for this chord (`Am`, `F#dim`, `G7`, …).
+    pub fn symbol(&self) -> String {
+        const NAMES: [&str; 12] = [
+            "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+        ];
+        let root = NAMES[usize::from(self.root.index())];
+        let suffix = match self.quality {
+            ChordQuality::Major => "",
+            ChordQuality::Minor => "m",
+            ChordQuality::Diminished => "dim",
+            ChordQuality::Augmented => "aug",
+            ChordQuality::Dominant7 => "7",
+            ChordQuality::Major7 => "maj7",
+            ChordQuality::Minor7 => "m7",
+            ChordQuality::Sus4 => "sus4",
+        };
+        format!("{root}{suffix}")
+    }
+}
+
+/// A symbol that could not be parsed.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("cannot parse '{0}'")]
+pub struct ParseError(pub String);
+
+#[cfg(test)]
+mod parse_tests {
+    use super::*;
+
+    #[test]
+    fn note_names_parse_with_accidentals() {
+        assert_eq!(parse_note_name("C").unwrap().index(), 0);
+        assert_eq!(parse_note_name("F#").unwrap().index(), 6);
+        assert_eq!(parse_note_name("Bb").unwrap().index(), 10);
+        assert_eq!(parse_note_name("Cb").unwrap().index(), 11);
+        assert!(parse_note_name("H").is_err());
+    }
+
+    #[test]
+    fn chord_symbols_round_trip() {
+        for sym in [
+            "C", "Am", "F#m", "Bdim", "Gaug", "D7", "Cmaj7", "Em7", "Asus4",
+        ] {
+            let chord = Chord::parse(sym).unwrap();
+            assert_eq!(chord.symbol(), *sym, "{sym}");
+            assert_eq!(Chord::parse(&chord.symbol()).unwrap(), chord);
+        }
+        assert!(Chord::parse("Xyz").is_err());
+        assert!(Chord::parse("").is_err());
+    }
+
+    #[test]
+    fn scale_kind_aliases() {
+        assert_eq!(parse_scale_kind("major").unwrap(), ScaleKind::Major);
+        assert_eq!(parse_scale_kind("MINOR").unwrap(), ScaleKind::NaturalMinor);
+        assert_eq!(parse_scale_kind("dorian").unwrap(), ScaleKind::Dorian);
+        assert!(parse_scale_kind("phrygian-dominant-9").is_err());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

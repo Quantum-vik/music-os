@@ -530,6 +530,11 @@ dependencies = [
 [[package]]
 name = "musicos-composition"
 version = "0.0.1"
+dependencies = [
+ "musicos-core-types",
+ "musicos-harmony",
+ "musicos-music-core",
+]
 
 [[package]]
 name = "musicos-config"
@@ -556,6 +561,7 @@ version = "0.0.1"
 dependencies = [
  "musicos-core-types",
  "serde",
+ "thiserror",
 ]
 
 [[package]]
@@ -689,8 +695,11 @@ dependencies = [
 name = "musicos-tools"
 version = "0.0.1"
 dependencies = [
+ "musicos-composition",
  "musicos-core-types",
+ "musicos-harmony",
  "musicos-midi",
+ "musicos-music-core",
  "musicos-project-model",
  "musicos-project-service",
  "musicos-render",

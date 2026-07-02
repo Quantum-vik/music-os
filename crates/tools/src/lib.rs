@@ -9,7 +9,12 @@
 //! follow the `{ data..., summary }` convention (`docs/07` §3): programs act on
 //! the data, language models act on the summary.
 
-use musicos_core_types::{Tempo, Tick, TrackId};
+use musicos_composition::{
+    chords_to_pattern, generate_bass, generate_chords, generate_drums, generate_melody, DrumStyle,
+};
+use musicos_core_types::{Seed, Tempo, Tick, TrackId};
+use musicos_harmony::{parse_note_name, parse_scale_kind, Chord, Scale};
+use musicos_music_core::Pattern;
 use musicos_project_model::{Command, TrackKind};
 use musicos_project_service::{ProjectSession, Transaction};
 use musicos_storage::BundleStore;
@@ -542,6 +547,266 @@ impl Tool for SetTrackMix {
     }
 }
 
+// --- composition: generate_chords / melody / bass / drums -----------------------
+
+fn parse_scale(key: &str, scale: &str) -> Result<Scale, ToolError> {
+    let tonic = parse_note_name(key).map_err(ToolError::invalid)?;
+    let kind = parse_scale_kind(scale).map_err(ToolError::invalid)?;
+    Ok(Scale { tonic, kind })
+}
+
+fn parse_progression(symbols: &[String]) -> Result<Vec<Chord>, ToolError> {
+    if symbols.is_empty() {
+        return Err(ToolError::invalid("progression must not be empty"));
+    }
+    symbols
+        .iter()
+        .map(|s| Chord::parse(s).map_err(ToolError::invalid))
+        .collect()
+}
+
+/// Creates a MIDI track holding one clip with the pattern; returns ids.
+fn insert_generated(
+    ctx: &mut ProjectCtx,
+    track_name: &str,
+    clip_name: &str,
+    pattern: Pattern,
+    at: i64,
+) -> Result<(u64, usize), ToolError> {
+    ctx.commit(Command::CreateTrack {
+        name: track_name.to_string(),
+        kind: TrackKind::Midi,
+    })?;
+    let track = ctx.state().tracks.last().expect("just created").id;
+    let notes = pattern.notes().len();
+    ctx.commit(Command::InsertClip {
+        track,
+        name: clip_name.to_string(),
+        pattern,
+        at: Tick(at),
+    })?;
+    Ok((track.0, notes))
+}
+
+/// Input for `generate_chords`.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct GenerateChordsInput {
+    /// Key root note name, e.g. "C", "F#", "Bb".
+    key: String,
+    /// Scale: `major` | `minor` | `harmonic_minor` | `melodic_minor` |
+    /// `dorian` | `mixolydian` | `major_pentatonic` | `minor_pentatonic`.
+    /// Default "major".
+    #[serde(default)]
+    scale: Option<String>,
+    /// Number of bars (one chord per bar, 4/4). Default 8.
+    #[serde(default)]
+    bars: Option<usize>,
+    /// Random seed — same inputs and seed always give the same music. Default 0.
+    #[serde(default)]
+    seed: Option<u64>,
+    /// Track name. Default "Chords".
+    #[serde(default)]
+    track_name: Option<String>,
+    /// Timeline position in ticks (960 PPQ). Default 0.
+    #[serde(default)]
+    at: Option<i64>,
+}
+
+struct GenerateChords;
+
+impl Tool for GenerateChords {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "generate_chords",
+            description: "Compose a chord progression with functional-harmony structure \
+                          (starts on I, cadences V->I) and place it as block chords on a \
+                          new track. Returns the progression symbols — pass them to \
+                          generate_melody / generate_bass to build on the same structure.",
+            params_schema: schema::<GenerateChordsInput>(),
+        }
+    }
+
+    fn call(&self, ctx: &mut ProjectCtx, input: Value) -> Result<Value, ToolError> {
+        let input: GenerateChordsInput = parse(input)?;
+        let bars = input.bars.unwrap_or(8).clamp(1, 256);
+        let scale = parse_scale(&input.key, input.scale.as_deref().unwrap_or("major"))?;
+        let progression = generate_chords(scale, bars, Seed(input.seed.unwrap_or(0)));
+        let symbols: Vec<String> = progression.iter().map(Chord::symbol).collect();
+        let pattern = chords_to_pattern(&progression, 3, 78);
+        let (track_id, notes) = insert_generated(
+            ctx,
+            input.track_name.as_deref().unwrap_or("Chords"),
+            "progression",
+            pattern,
+            input.at.unwrap_or(0),
+        )?;
+        Ok(json!({
+            "progression": symbols,
+            "track_id": track_id,
+            "notes": notes,
+            "summary": format!(
+                "chords on track {track_id}: {} ({bars} bars)",
+                symbols.join(" - ")
+            ),
+        }))
+    }
+}
+
+/// Input for `generate_melody`.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct GenerateMelodyInput {
+    /// Chord symbols, one per bar, e.g. `["Am","F","C","G"]`.
+    progression: Vec<String>,
+    /// Key root note name for scale-step passing tones, e.g. "A".
+    key: String,
+    /// Scale (see `generate_chords`). Default "major".
+    #[serde(default)]
+    scale: Option<String>,
+    /// Random seed. Default 0.
+    #[serde(default)]
+    seed: Option<u64>,
+    /// Track name. Default "Melody".
+    #[serde(default)]
+    track_name: Option<String>,
+    /// Timeline position in ticks. Default 0.
+    #[serde(default)]
+    at: Option<i64>,
+}
+
+struct GenerateMelody;
+
+impl Tool for GenerateMelody {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "generate_melody",
+            description: "Compose a melody over a chord progression (chord tones on \
+                          strong beats, scale steps between) on a new track. Use the \
+                          progression returned by generate_chords, or write your own.",
+            params_schema: schema::<GenerateMelodyInput>(),
+        }
+    }
+
+    fn call(&self, ctx: &mut ProjectCtx, input: Value) -> Result<Value, ToolError> {
+        let input: GenerateMelodyInput = parse(input)?;
+        let progression = parse_progression(&input.progression)?;
+        let scale = parse_scale(&input.key, input.scale.as_deref().unwrap_or("major"))?;
+        let pattern = generate_melody(&progression, scale, Seed(input.seed.unwrap_or(0)));
+        let (track_id, notes) = insert_generated(
+            ctx,
+            input.track_name.as_deref().unwrap_or("Melody"),
+            "melody",
+            pattern,
+            input.at.unwrap_or(0),
+        )?;
+        Ok(json!({
+            "track_id": track_id,
+            "notes": notes,
+            "summary": format!("melody on track {track_id}: {notes} notes over {} bars",
+                input.progression.len()),
+        }))
+    }
+}
+
+/// Input for `generate_bass`.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct GenerateBassInput {
+    /// Chord symbols, one per bar.
+    progression: Vec<String>,
+    /// Random seed. Default 0.
+    #[serde(default)]
+    seed: Option<u64>,
+    /// Track name. Default "Bass".
+    #[serde(default)]
+    track_name: Option<String>,
+    /// Timeline position in ticks. Default 0.
+    #[serde(default)]
+    at: Option<i64>,
+}
+
+struct GenerateBass;
+
+impl Tool for GenerateBass {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "generate_bass",
+            description: "Compose a bassline following a chord progression (root on the \
+                          downbeat, seeded root/fifth/octave movement) on a new track.",
+            params_schema: schema::<GenerateBassInput>(),
+        }
+    }
+
+    fn call(&self, ctx: &mut ProjectCtx, input: Value) -> Result<Value, ToolError> {
+        let input: GenerateBassInput = parse(input)?;
+        let progression = parse_progression(&input.progression)?;
+        let pattern = generate_bass(&progression, Seed(input.seed.unwrap_or(0)));
+        let (track_id, notes) = insert_generated(
+            ctx,
+            input.track_name.as_deref().unwrap_or("Bass"),
+            "bass",
+            pattern,
+            input.at.unwrap_or(0),
+        )?;
+        Ok(json!({
+            "track_id": track_id,
+            "notes": notes,
+            "summary": format!("bass on track {track_id}: {notes} notes"),
+        }))
+    }
+}
+
+/// Input for `generate_drums`.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct GenerateDrumsInput {
+    /// Number of bars (4/4). Default 8.
+    #[serde(default)]
+    bars: Option<usize>,
+    /// Style: `basic` | `four_on_floor` | `lofi`. Default "basic".
+    #[serde(default)]
+    style: Option<String>,
+    /// Random seed. Default 0.
+    #[serde(default)]
+    seed: Option<u64>,
+    /// Track name. Default "Drums".
+    #[serde(default)]
+    track_name: Option<String>,
+    /// Timeline position in ticks. Default 0.
+    #[serde(default)]
+    at: Option<i64>,
+}
+
+struct GenerateDrums;
+
+impl Tool for GenerateDrums {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "generate_drums",
+            description: "Compose a drum pattern (GM keys: kick 36, snare 38, hat 42) \
+                          on a new track. Styles: basic, four_on_floor, lofi.",
+            params_schema: schema::<GenerateDrumsInput>(),
+        }
+    }
+
+    fn call(&self, ctx: &mut ProjectCtx, input: Value) -> Result<Value, ToolError> {
+        let input: GenerateDrumsInput = parse(input)?;
+        let bars = input.bars.unwrap_or(8).clamp(1, 256);
+        let style = DrumStyle::parse(input.style.as_deref().unwrap_or("basic"))
+            .map_err(|s| ToolError::invalid(format!("unknown drum style '{s}'")))?;
+        let pattern = generate_drums(bars, style, Seed(input.seed.unwrap_or(0)));
+        let (track_id, notes) = insert_generated(
+            ctx,
+            input.track_name.as_deref().unwrap_or("Drums"),
+            "drums",
+            pattern,
+            input.at.unwrap_or(0),
+        )?;
+        Ok(json!({
+            "track_id": track_id,
+            "notes": notes,
+            "summary": format!("drums on track {track_id}: {notes} hits, {bars} bars"),
+        }))
+    }
+}
+
 /// The canonical tool registry.
 pub struct Registry {
     tools: Vec<Box<dyn Tool>>,
@@ -559,6 +824,10 @@ impl Registry {
                 Box::new(SetTempo),
                 Box::new(RenderSong),
                 Box::new(SetTrackMix),
+                Box::new(GenerateChords),
+                Box::new(GenerateMelody),
+                Box::new(GenerateBass),
+                Box::new(GenerateDrums),
                 Box::new(Undo),
             ],
         }

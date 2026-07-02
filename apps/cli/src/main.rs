@@ -106,6 +106,14 @@ enum Command {
         #[arg(long, default_value_t = 16)]
         max_turns: u32,
     },
+    /// Call any registered tool by name with a JSON input (full CLI/MCP parity).
+    Call {
+        /// Tool name (see `music tools`).
+        tool: String,
+        /// JSON input object. Default: {}.
+        #[arg(default_value = "{}")]
+        input: String,
+    },
     /// List every registered tool and its JSON input schema.
     Tools,
     /// File-level MIDI utilities (no project needed).
@@ -212,6 +220,7 @@ fn main() -> ExitCode {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one arm per subcommand; commands migrate onto the registry over time
 fn run(cli: &Cli) -> anyhow::Result<Value> {
     match &cli.command {
         Command::Init { name, dir } => {
@@ -290,6 +299,11 @@ fn run(cli: &Cli) -> anyhow::Result<Value> {
                     }))
                 }
             }
+        }
+        Command::Call { tool, input } => {
+            let parsed: Value = serde_json::from_str(input)
+                .map_err(|e| anyhow::anyhow!("input is not valid JSON: {e}"))?;
+            call_tool(cli, tool, parsed)
         }
         Command::Tools => {
             let specs: Vec<Value> = Registry::new()

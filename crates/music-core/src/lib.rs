@@ -116,7 +116,7 @@ impl Pattern {
     /// to `±velocity` steps. The same `(pattern, seed, params)` always produces
     /// the same output (NFR-4).
     pub fn humanized(&self, seed: Seed, timing: Tick, velocity: u8) -> Pattern {
-        let mut rng = SplitMix64::new(seed);
+        let mut rng = rng::SplitMix64::new(seed);
         self.map_notes(|n| {
             let dt = rng.in_range(timing.0);
             let dv = i32::try_from(rng.in_range(i64::from(velocity))).expect("|dv| <= 127");
@@ -161,31 +161,57 @@ pub enum PatternError {
     NonPositiveDuration(Tick),
 }
 
-/// Deterministic RNG (SplitMix64). Private on purpose: all domain randomness
-/// flows through seeded pattern APIs, never through ambient RNG state.
-struct SplitMix64(u64);
+pub mod rng {
+    //! Deterministic, seeded randomness for the domain (NFR-4).
+    //!
+    //! Every stochastic domain operation takes an explicit [`Seed`] and
+    //! flows through this RNG — never
+    //! ambient/global RNG state. SplitMix64: tiny, fast, and identical on
+    //! every platform.
 
-impl SplitMix64 {
-    fn new(seed: Seed) -> Self {
-        SplitMix64(seed.0)
-    }
+    use musicos_core_types::Seed;
 
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
+    /// A deterministic SplitMix64 generator.
+    #[derive(Debug, Clone)]
+    pub struct SplitMix64(u64);
 
-    /// Uniform value in `[-max, max]`; `0` when `max <= 0`.
-    fn in_range(&mut self, max: i64) -> i64 {
-        if max <= 0 {
-            return 0;
+    impl SplitMix64 {
+        /// Creates a generator from a seed.
+        pub fn new(seed: Seed) -> Self {
+            SplitMix64(seed.0)
         }
-        let span = u64::try_from(2 * max + 1).expect("max is positive");
-        let r = i64::try_from(self.next_u64() % span).expect("span fits i64");
-        r - max
+
+        /// Next raw 64-bit value.
+        pub fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+
+        /// Uniform value in `[-max, max]`; `0` when `max <= 0`.
+        pub fn in_range(&mut self, max: i64) -> i64 {
+            if max <= 0 {
+                return 0;
+            }
+            let span = u64::try_from(2 * max + 1).expect("max is positive");
+            let r = i64::try_from(self.next_u64() % span).expect("span fits i64");
+            r - max
+        }
+
+        /// Uniform index in `[0, len)`; `0` when `len == 0`.
+        pub fn index(&mut self, len: usize) -> usize {
+            if len == 0 {
+                return 0;
+            }
+            usize::try_from(self.next_u64() % len as u64).expect("index fits usize")
+        }
+
+        /// True with probability `pct`/100.
+        pub fn chance(&mut self, pct: u8) -> bool {
+            (self.next_u64() % 100) < u64::from(pct.min(100))
+        }
     }
 }
 

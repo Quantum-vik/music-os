@@ -34,6 +34,7 @@ criterion = "0.5"
 musicos-core-types = { path = "crates/core-types" }
 musicos-music-core = { path = "crates/music-core" }
 musicos-harmony = { path = "crates/harmony" }
+musicos-composition = { path = "crates/composition" }
 musicos-timeline = { path = "crates/timeline" }
 musicos-midi = { path = "crates/midi" }
 musicos-project-model = { path = "crates/project-model" }
