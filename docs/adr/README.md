@@ -23,5 +23,12 @@ affected design doc. ADRs are immutable once Accepted — supersede, don't edit 
 | 0014 | Native MusicOS plugins: compiled-in (v1) → out-of-process (v1.x) → stable-ABI dynamic (v2, likely via CLAP extensions) | Accepted | `09` §2 |
 | 0015 | Three-world thread model (async/worker/RT); message passing only across worlds; bounded channels with named overflow policies | Accepted | `10` |
 
+Amendment to ADR-0011 (2026-07-03): the v0 MCP server is a minimal
+hand-rolled stdio JSON-RPC implementation (tools surface only, zero new
+dependencies) rather than `rmcp` — adopted to ship the tools surface without
+taking on SDK churn. `rmcp` replaces it when resources, HTTP transport, or
+auth land; the tool-registry abstraction keeps that swap inside
+`crates/mcp-server`.
+
 Pending (spikes scheduled, see `13` §7): persistent-collection strategy for snapshots;
 CLAP host library choice; MusicXML subset boundary; desktop meter transport.

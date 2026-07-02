@@ -349,6 +349,13 @@ dependencies = [
 [[package]]
 name = "musicos-mcp-server"
 version = "0.0.1"
+dependencies = [
+ "musicos-core-types",
+ "musicos-project-model",
+ "musicos-storage",
+ "musicos-tools",
+ "serde_json",
+]
 
 [[package]]
 name = "musicos-midi"
@@ -431,8 +438,7 @@ dependencies = [
 name = "musicos-server"
 version = "0.0.1"
 dependencies = [
- "musicos-core-types",
- "musicos-project-service",
+ "musicos-mcp-server",
 ]
 
 [[package]]

@@ -1,17 +1,43 @@
-//! MusicOS MCP server and API host.
+//! MusicOS MCP server (`music-server`).
 //!
-//! Phase 0 placeholder binary. The MCP surface (rmcp over the tool registry,
-//! stdio + HTTP transports) is specified in `docs/07_MCP_Architecture.md` and
-//! lands in Phase 3.
+//! Speaks MCP over stdio — the transport Claude Code and Claude Desktop use to
+//! spawn tool servers. Register it with your Claude subscription (no API keys):
+//!
+//! ```sh
+//! claude mcp add musicos -- music-server --project /path/to/Song.musicos
+//! ```
+//!
+//! Without `--project`, the single `*.musicos` bundle in the working directory
+//! is used, or the model is told to call `create_project`. HTTP/WebSocket
+//! transport and MCP resources land per `docs/07_MCP_Architecture.md`.
 
+use std::io::{stdin, stdout, BufReader};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
-use musicos_core_types::ProjectId;
-use musicos_project_service::ProjectSession;
-
 fn main() -> ExitCode {
-    // Touch the service layer so the layering is exercised from every app.
-    let _ = ProjectSession::create(ProjectId(0), "placeholder");
-    eprintln!("music-server: MCP server lands in Phase 3 (docs/12_Development_Roadmap.md)");
-    ExitCode::FAILURE
+    let mut args = std::env::args().skip(1);
+    let mut project: Option<PathBuf> = None;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--project" | "-P" => project = args.next().map(PathBuf::from),
+            "--help" | "-h" => {
+                eprintln!(
+                    "MusicOS MCP server (stdio)\n\nusage: music-server [--project <dir.musicos>]"
+                );
+                return ExitCode::SUCCESS;
+            }
+            other => {
+                eprintln!("unknown argument: {other}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    match musicos_mcp_server::serve(BufReader::new(stdin().lock()), stdout().lock(), project) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("music-server: transport error: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }

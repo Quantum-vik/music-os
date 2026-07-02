@@ -92,6 +92,29 @@ rendering pipeline are planned later phases of the project.
 > WAV renderer (`music render`) are working; the real-time engine, mixer graph,
 > plugin hosting, and AI runtime are still ahead.
 
+## Use with Claude (your subscription, no API keys)
+
+MusicOS ships an MCP server. Claude Code spawns it locally and drives every
+MusicOS tool — composition, project editing, mixing, rendering — using **your
+existing Claude subscription** for the reasoning. Nothing is sent anywhere
+except your normal Claude conversation; MusicOS executes locally and
+deterministically, and every AI action lands in the project's undoable
+command log with actor `agent:mcp`.
+
+```sh
+cargo install --path apps/server        # or: cargo build --release
+claude mcp add musicos -- music-server --project /path/to/Song.musicos
+```
+
+Then, in Claude Code:
+
+> "Create a project called Sunrise, add a keys track, import idea.mid,
+> pan the keys slightly left, drop the tempo to 92, and render a draft."
+
+Token efficiency is designed in: strict input schemas, terse tool
+descriptions, compact `{data, summary}` outputs, and `get_project_summary`
+digests instead of raw project files (docs/06 §5, docs/07 §3).
+
 ## Design documentation
 
 Start with the [vision](docs/00_Vision.md), then the

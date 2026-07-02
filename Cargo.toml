@@ -42,6 +42,7 @@ musicos-audio-graph = { path = "crates/audio-graph" }
 musicos-dsp = { path = "crates/dsp" }
 musicos-instruments = { path = "crates/instruments" }
 musicos-render = { path = "crates/render" }
+musicos-mcp-server = { path = "crates/mcp-server" }
 musicos-project-service = { path = "crates/project-service" }
 
 [workspace.lints.rust]
