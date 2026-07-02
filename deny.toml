@@ -19,7 +19,8 @@ allow = [
     "Zlib",
     "Unicode-3.0",
     "MPL-2.0",
-    "Unlicense",     # midly
+    "Unlicense",             # midly
+    "CDLA-Permissive-2.0",  # webpki-roots (Mozilla CA bundle, via ureq/rustls)
 ]
 # GPL-family deliberately absent: the VST3 host crate will carry its own
 # exception when it lands (docs/09 §3), isolated from the rest of the graph.

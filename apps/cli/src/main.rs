@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use musicos_ai_providers::{find_server_binary, AnthropicBackend, Provider, SubscriptionRunner};
+use musicos_ai_runtime::{run_agent, AgentConfig};
 use musicos_core_types::{ProjectId, Seed, Tick};
 use musicos_midi::{export_smf, import_smf, SmfSong};
 use musicos_project_model::ProjectState;
@@ -89,6 +91,20 @@ enum Command {
         /// Sample rate in Hz.
         #[arg(long, default_value_t = 48_000)]
         rate: u32,
+    },
+    /// Run an AI production agent over the project (subscription or API).
+    Ai {
+        /// What you want done, in plain language.
+        brief: String,
+        /// Provider: subscription (Claude Code, no API keys) | api | auto.
+        #[arg(long, default_value = "auto")]
+        provider: String,
+        /// Model id for api mode.
+        #[arg(long, default_value = "claude-opus-4-8")]
+        model: String,
+        /// Maximum model round-trips (api mode).
+        #[arg(long, default_value_t = 16)]
+        max_turns: u32,
     },
     /// List every registered tool and its JSON input schema.
     Tools,
@@ -238,6 +254,43 @@ fn run(cli: &Cli) -> anyhow::Result<Value> {
             "render_song",
             json!({ "output": output.display().to_string(), "sample_rate": rate }),
         ),
+        Command::Ai {
+            brief,
+            provider,
+            model,
+            max_turns,
+        } => {
+            let path = resolve_project(cli.project.as_deref())?;
+            match Provider::resolve(Some(provider.as_str()))? {
+                Provider::Subscription => {
+                    let runner = SubscriptionRunner {
+                        server_bin: find_server_binary()?,
+                        project: path,
+                    };
+                    eprintln!("[musicos] provider: subscription (Claude Code + MCP)");
+                    runner.run(brief)?;
+                    Ok(json!({ "summary": "agent run finished (subscription mode)" }))
+                }
+                Provider::Api => {
+                    let backend = AnthropicBackend::from_env()?;
+                    let mut ctx = ProjectCtx::open(&path, "agent:api")?;
+                    let config = AgentConfig {
+                        model: model.clone(),
+                        max_turns: *max_turns,
+                        ..AgentConfig::default()
+                    };
+                    eprintln!("[musicos] provider: api (model {model})");
+                    let outcome = run_agent(&backend, &Registry::new(), &mut ctx, &config, brief)?;
+                    Ok(json!({
+                        "reply": outcome.reply,
+                        "turns": outcome.turns,
+                        "tool_calls": outcome.tool_calls,
+                        "budget_exhausted": outcome.budget_exhausted,
+                        "summary": outcome.reply,
+                    }))
+                }
+            }
+        }
         Command::Tools => {
             let specs: Vec<Value> = Registry::new()
                 .specs()

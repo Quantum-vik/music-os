@@ -92,6 +92,28 @@ rendering pipeline are planned later phases of the project.
 > WAV renderer (`music render`) are working; the real-time engine, mixer graph,
 > plugin hosting, and AI runtime are still ahead.
 
+## AI: your subscription or your API key — your choice
+
+`music ai "<brief>"` runs a production agent over the open project. Two
+providers, selected with `--provider` (default `auto`):
+
+| Provider | How it reasons | Auth |
+|---|---|---|
+| `subscription` | Spawns your local Claude Code headless, wired to MusicOS's MCP server as its only tool source | Your existing Claude subscription — no API keys |
+| `api` | In-process tool loop against the Anthropic Messages API (default model `claude-opus-4-8`, `--model` to change) | `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` |
+
+```sh
+music ai "add a keys track, import idea.mid, pan it slightly left, render a draft"
+music ai "make the project 92 BPM" --provider api --model claude-sonnet-5
+```
+
+`auto` picks subscription when the `claude` CLI is installed, else api when
+credentials are present. Both providers use the same deterministic tool
+registry: every AI action is validated, logged with an agent actor, and
+undoable. Token efficiency is designed in — strict schemas, terse
+descriptions, summary-first outputs, prompt-cache breakpoints on the stable
+prefix, and budget caps on the loop (docs/06).
+
 ## Use with Claude (your subscription, no API keys)
 
 MusicOS ships an MCP server. Claude Code spawns it locally and drives every
