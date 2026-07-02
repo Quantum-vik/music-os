@@ -9,6 +9,15 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+musicos-core-types = { workspace = true }
+musicos-dsp = { workspace = true }
+musicos-instruments = { workspace = true }
+musicos-project-model = { workspace = true }
+thiserror = { workspace = true }
+hound = { workspace = true }
+
+[dev-dependencies]
+musicos-music-core = { workspace = true }
 
 [lints]
 workspace = true

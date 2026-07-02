@@ -12,6 +12,7 @@ publish.workspace = true
 musicos-core-types = { workspace = true }
 musicos-midi = { workspace = true }
 musicos-project-model = { workspace = true }
+musicos-render = { workspace = true }
 musicos-project-service = { workspace = true }
 musicos-storage = { workspace = true }
 schemars = { workspace = true }

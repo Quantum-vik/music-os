@@ -85,9 +85,12 @@ Today the repo is still early-stage and focused on the symbolic/project foundati
 The audio engine, real-time playback, plugin hosting, full AI runtime, and production-grade
 rendering pipeline are planned later phases of the project.
 
-> **Status: Phase 0 — foundations.** Architecture is fully specified in
+> **Status: early Phase 2.** Architecture is fully specified in
 > [`docs/`](docs/README.md); implementation follows the
-> [development roadmap](docs/12_Development_Roadmap.md). Nothing here makes sound yet.
+> [development roadmap](docs/12_Development_Roadmap.md). The symbolic core,
+> project model with undo, bundle storage, tool registry, and a first offline
+> WAV renderer (`music render`) are working; the real-time engine, mixer graph,
+> plugin hosting, and AI runtime are still ahead.
 
 ## Design documentation
 

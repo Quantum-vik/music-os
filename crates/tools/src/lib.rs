@@ -414,6 +414,61 @@ impl ProjectCtx {
     }
 }
 
+// --- render_song ----------------------------------------------------------------
+
+/// Input for `render_song`.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct RenderSongInput {
+    /// Output WAV path.
+    output: String,
+    /// Sample rate in Hz (default 48000).
+    #[serde(default)]
+    sample_rate: Option<u32>,
+}
+
+struct RenderSong;
+
+impl Tool for RenderSong {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "render_song",
+            description: "Render the project to a 16-bit stereo WAV file using the \
+                          built-in synthesizer. Deterministic per platform. Slower \
+                          than analysis tools; call once per iteration.",
+            params_schema: schema::<RenderSongInput>(),
+        }
+    }
+
+    fn call(&self, ctx: &mut ProjectCtx, input: Value) -> Result<Value, ToolError> {
+        let input: RenderSongInput = parse(input)?;
+        let mut opts = musicos_render::RenderOptions::default();
+        if let Some(rate) = input.sample_rate {
+            if !(8_000..=192_000).contains(&rate) {
+                return Err(ToolError::invalid(
+                    "sample_rate must be within 8000..=192000",
+                ));
+            }
+            opts.sample_rate = rate;
+        }
+        let path = std::path::PathBuf::from(&input.output);
+        let report =
+            musicos_render::render_to_wav(ctx.state(), &opts, &path).map_err(|e| ToolError {
+                code: "E_RENDER",
+                message: e.to_string(),
+            })?;
+        Ok(json!({
+            "output": input.output,
+            "seconds": report.seconds,
+            "frames": report.frames,
+            "peak": report.peak,
+            "summary": format!(
+                "rendered {:.1}s ({} frames, peak {:.2}) -> {}",
+                report.seconds, report.frames, report.peak, input.output
+            ),
+        }))
+    }
+}
+
 /// The canonical tool registry.
 pub struct Registry {
     tools: Vec<Box<dyn Tool>>,
@@ -429,6 +484,7 @@ impl Registry {
                 Box::new(RemoveTrack),
                 Box::new(ImportMidi),
                 Box::new(SetTempo),
+                Box::new(RenderSong),
                 Box::new(Undo),
             ],
         }

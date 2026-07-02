@@ -67,6 +67,15 @@ enum Command {
     },
     /// Undo the most recent project transaction.
     Undo,
+    /// Render the project to a WAV file with the built-in synthesizer.
+    Render {
+        /// Output .wav path.
+        #[arg(short, long, default_value = "render.wav")]
+        output: PathBuf,
+        /// Sample rate in Hz.
+        #[arg(long, default_value_t = 48_000)]
+        rate: u32,
+    },
     /// List every registered tool and its JSON input schema.
     Tools,
     /// File-level MIDI utilities (no project needed).
@@ -200,6 +209,11 @@ fn run(cli: &Cli) -> anyhow::Result<Value> {
         ),
         Command::Tempo { bpm, at } => call_tool(cli, "set_tempo", json!({ "bpm": bpm, "at": at })),
         Command::Undo => call_tool(cli, "undo", json!({})),
+        Command::Render { output, rate } => call_tool(
+            cli,
+            "render_song",
+            json!({ "output": output.display().to_string(), "sample_rate": rate }),
+        ),
         Command::Tools => {
             let specs: Vec<Value> = Registry::new()
                 .specs()

@@ -25,6 +25,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 midly = "0.5"
+hound = "3.5"
 proptest = "1"
 criterion = "0.5"
 
@@ -37,6 +38,9 @@ musicos-midi = { path = "crates/midi" }
 musicos-project-model = { path = "crates/project-model" }
 musicos-storage = { path = "crates/storage" }
 musicos-tools = { path = "crates/tools" }
+musicos-dsp = { path = "crates/dsp" }
+musicos-instruments = { path = "crates/instruments" }
+musicos-render = { path = "crates/render" }
 musicos-project-service = { path = "crates/project-service" }
 
 [workspace.lints.rust]
@@ -53,6 +57,11 @@ must_use_candidate = "allow"
 return_self_not_must_use = "allow"
 missing_errors_doc = "allow"  # re-enable once error taxonomy lands (Phase 1)
 missing_panics_doc = "allow"  # domain code uses expect() only on provably unreachable states
+# Sample-count <-> float casts are pervasive and safe by construction in audio
+# code (values << 2^24). Musical time stays integer (ADR-0004) regardless.
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
 
 [profile.release]
 lto = "thin"
