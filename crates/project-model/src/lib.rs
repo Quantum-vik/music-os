@@ -123,6 +123,7 @@ impl ProjectState {
 
     /// Validates a command against the current state and produces its events
     /// without applying them.
+    #[allow(clippy::too_many_lines)] // one arm per command; split into per-command fns when it grows
     fn plan(&mut self, command: Command) -> Result<Vec<Event>, DomainError> {
         match command {
             Command::RenameProject { name } => {
