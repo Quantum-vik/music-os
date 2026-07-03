@@ -304,6 +304,34 @@ mod tests {
         assert!(import_smf(&bytes).is_ok());
     }
 
+    /// Robustness (fuzz-lite): seeded byte mutations of a valid SMF must
+    /// error or parse — never panic (untrusted-input surface, docs/05 §7).
+    #[test]
+    fn mutated_smf_bytes_never_panic() {
+        let song = song_with(vec![Note {
+            pitch: Pitch::new(60),
+            velocity: Velocity::MF,
+            start: Tick(0),
+            duration: Tick(960),
+        }]);
+        let original = export_smf(&song);
+        let mut rng_state = 0x8bad_f00d_u64;
+        let mut next = move || {
+            rng_state = rng_state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            rng_state
+        };
+        for _ in 0..2000 {
+            let mut bytes = original.clone();
+            for _ in 0..=(next() % 6) {
+                let pos = usize::try_from(next()).unwrap() % bytes.len();
+                bytes[pos] = u8::try_from(next() % 256).unwrap();
+            }
+            let _ = import_smf(&bytes); // Ok or Err, never panic
+        }
+    }
+
     proptest! {
         /// Lossless round-trip holds for patterns without same-pitch overlap.
         /// (With overlap, SMF's on/on/off/off sequences are ambiguous by

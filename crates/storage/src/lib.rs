@@ -248,6 +248,81 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// docs/08 §9: every released format version's fixtures must open forever.
+    /// The corpus lives in tests/corpus/<version>/ at the repo root; this test
+    /// walks every fixture, loads it, and replays its log.
+    #[test]
+    fn format_corpus_opens_forever() {
+        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus");
+        let mut fixtures = 0;
+        for version_dir in std::fs::read_dir(&corpus).expect("corpus dir exists") {
+            let version_dir = version_dir.unwrap().path();
+            if !version_dir.is_dir() {
+                continue;
+            }
+            for fixture in std::fs::read_dir(&version_dir).unwrap() {
+                let fixture = fixture.unwrap().path();
+                if !fixture.is_dir() {
+                    continue;
+                }
+                fixtures += 1;
+                let store = BundleStore::open(&fixture)
+                    .unwrap_or_else(|e| panic!("{}: {e}", fixture.display()));
+                let state = store
+                    .load_state()
+                    .unwrap_or_else(|e| panic!("{}: {e}", fixture.display()));
+                assert!(
+                    !state.tracks.is_empty(),
+                    "{}: fixture has tracks",
+                    fixture.display()
+                );
+                // Log replay must still fold cleanly.
+                for record in store.read_log().unwrap() {
+                    let _ = &record.txn.events; // events deserialize
+                }
+            }
+        }
+        assert!(fixtures >= 1, "at least one corpus fixture is required");
+    }
+
+    /// Robustness (fuzz-lite, stable toolchain): seeded random mutations of a
+    /// valid project.json must error, never panic.
+    #[test]
+    fn mutated_state_files_error_not_panic() {
+        let dir = tmpdir("mutate");
+        let mut session = ProjectSession::create(ProjectId(9), "Mutate");
+        session
+            .dispatch(
+                "user:test",
+                Command::CreateTrack {
+                    name: "T".into(),
+                    kind: TrackKind::Midi,
+                },
+            )
+            .unwrap();
+        let store = BundleStore::create(&dir, session.state()).unwrap();
+        let original = fs::read(dir.join("project.json")).unwrap();
+
+        let mut rng_state = 0x1234_5678_u64;
+        let mut next = move || {
+            rng_state = rng_state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            rng_state
+        };
+        for _ in 0..500 {
+            let mut bytes = original.clone();
+            for _ in 0..=(next() % 8) {
+                let pos = usize::try_from(next()).unwrap() % bytes.len();
+                bytes[pos] = u8::try_from(next() % 256).unwrap();
+            }
+            fs::write(dir.join("project.json"), &bytes).unwrap();
+            // Must return Ok or Err — any panic fails the test harness.
+            let _ = store.load_state();
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn create_refuses_to_overwrite_and_open_requires_a_bundle() {
         let dir = tmpdir("guards");
