@@ -30,8 +30,8 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - uses: Swatinem/rust-cache@v2
-      # CLI + MCP server only; desktop bundling needs signing (later milestone).
-      - run: cargo build --release --target ${{ matrix.target }} -p musicos-cli -p musicos-server
+      # CLI, MCP server, and the MusicOS Player CLAP plugin.
+      - run: cargo build --release --target ${{ matrix.target }} -p musicos-cli -p musicos-server -p musicos-player
       - name: Package
         shell: bash
         run: |
@@ -39,8 +39,11 @@ jobs:
           BIN_DIR="target/${{ matrix.target }}/release"
           NAME="musicos-${GITHUB_REF_NAME}-${{ matrix.target }}"
           if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "$BIN_DIR/musicos_player.dll" "dist/MusicOS Player-${{ matrix.target }}.clap"
             7z a "dist/${NAME}.zip" "$BIN_DIR/music.exe" "$BIN_DIR/music-server.exe" README.md LICENSE-MIT LICENSE-APACHE
           else
+            EXT=so; [ "${{ runner.os }}" = "macOS" ] && EXT=dylib
+            cp "$BIN_DIR/libmusicos_player.$EXT" "dist/MusicOS Player-${{ matrix.target }}.clap"
             tar czf "dist/${NAME}.tar.gz" -C "$BIN_DIR" music music-server -C "$GITHUB_WORKSPACE" README.md LICENSE-MIT LICENSE-APACHE
           fi
       - uses: actions/upload-artifact@v4

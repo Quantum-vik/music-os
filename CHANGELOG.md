@@ -7,6 +7,10 @@ semantic versioning. Project format compatibility is governed separately by
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.2] - 2026-07-03
+
 ### Added
 - DAW bridge: **MusicOS Player** CLAP plugin (`plugins/player`) — plays a
   `.musicos` project inside any host (FL Studio via clap-wrapper VST3,
