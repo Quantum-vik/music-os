@@ -6,6 +6,10 @@
 //! third-party `.clap` does. It is intentionally tiny: one plugin, no
 //! extensions, no events.
 
+// Implementing the CLAP C ABI requires unsafe throughout; the plugin is
+// deliberately minimal so every unsafe block is auditable at a glance.
+#![allow(unsafe_code)]
+
 use std::ffi::{c_char, c_void, CStr};
 
 use clap_sys::entry::clap_plugin_entry;

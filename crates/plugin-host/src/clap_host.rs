@@ -9,6 +9,10 @@
 //! Scope of this milestone: stereo audio effects, no events, no extensions —
 //! parameters and instruments arrive with the events milestone.
 
+// CLAP hosting is FFI by nature: every unsafe block talks to a
+// dlopen'd C ABI. Safety notes accompany each call site.
+#![allow(unsafe_code)]
+
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::Path;
 

@@ -2,6 +2,9 @@
 //! cargo, renames it to `.clap`, and drives it through the full host path —
 //! dlopen → `clap_entry` → factory → instance → activate → process.
 
+// The test exercises the unsafe loading API on a freshly built plugin.
+#![allow(unsafe_code)]
+
 use std::path::PathBuf;
 
 use musicos_plugin_api::ProcessorPlugin;

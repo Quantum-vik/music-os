@@ -358,6 +358,7 @@ fn run(cli: &Cli, config: &musicos_config::Config) -> anyhow::Result<Value> {
             if let Some(path) = probe {
                 // SAFETY: probing runs the library's entry code; the user
                 // explicitly named this file on the command line.
+                #[allow(unsafe_code)]
                 let library = unsafe { musicos_plugin_host::clap_host::ClapLibrary::load(path) }?;
                 let plugins: Vec<Value> = library
                     .plugins()?
