@@ -1,0 +1,61 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>MusicOS</title>
+<style>
+  body { font-family: ui-monospace, monospace; margin: 0; background: #14161a; color: #e6e6e6; display: flex; flex-direction: column; height: 100vh; }
+  header { padding: 10px 14px; background: #1d2026; display: flex; gap: 8px; align-items: center; }
+  header b { color: #7bd88f; margin-right: 6px; }
+  input, select, textarea, button { background: #23262d; color: #e6e6e6; border: 1px solid #333; border-radius: 6px; padding: 6px 8px; font: inherit; }
+  button { cursor: pointer; } button:hover { border-color: #7bd88f; }
+  main { flex: 1; display: grid; grid-template-columns: 320px 1fr; gap: 10px; padding: 10px 14px; min-height: 0; }
+  #tools { overflow-y: auto; } #tools div { padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+  #tools div:hover { background: #23262d; } #tools .name { color: #7bd88f; }
+  #right { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  textarea { height: 90px; resize: vertical; }
+  pre { flex: 1; overflow: auto; background: #0e1013; padding: 10px; border-radius: 6px; margin: 0; }
+</style>
+</head>
+<body>
+<header>
+  <b>MusicOS</b>
+  <input id="project" placeholder="/path/to/Song.musicos" size="40">
+  <button onclick="newProject()">New</button>
+  <button onclick="callTool('get_project_summary', {})">Summary</button>
+</header>
+<main>
+  <div id="tools"></div>
+  <div id="right">
+    <div style="display:flex;gap:8px"><input id="tool" placeholder="tool name" size="28">
+    <button onclick="runTool()">Call</button></div>
+    <textarea id="input">{}</textarea>
+    <pre id="out">Pick a tool, set the project path, call it. Every action here goes through the same registry as the CLI and Claude.</pre>
+  </div>
+</main>
+<script>
+const invoke = window.__TAURI__.core.invoke;
+const out = (v) => document.getElementById('out').textContent = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+async function load() {
+  const tools = await invoke('tools');
+  const el = document.getElementById('tools');
+  el.innerHTML = tools.map(t => `<div onclick='pick(${JSON.stringify(t.name)})'><span class="name">${t.name}</span><br><small>${t.description.slice(0,90)}</small></div>`).join('');
+}
+function pick(name) { document.getElementById('tool').value = name; }
+async function runTool() {
+  try {
+    const input = JSON.parse(document.getElementById('input').value || '{}');
+    out(await invoke('call', { project: project(), tool: document.getElementById('tool').value, input }));
+  } catch (e) { out(String(e)); }
+}
+async function callTool(tool, input) {
+  try { out(await invoke('call', { project: project(), tool, input })); } catch (e) { out(String(e)); }
+}
+async function newProject() {
+  try { out(await invoke('create_project', { path: project(), name: 'Untitled' })); } catch (e) { out(String(e)); }
+}
+const project = () => document.getElementById('project').value.trim();
+load();
+</script>
+</body>
+</html>

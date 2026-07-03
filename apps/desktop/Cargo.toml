@@ -1,0 +1,27 @@
+[package]
+name = "musicos-desktop"
+description = "MusicOS desktop client (Tauri shell over the shared services)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "musicos_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+musicos-core-types = { workspace = true }
+musicos-project-model = { workspace = true }
+musicos-storage = { workspace = true }
+musicos-tools = { workspace = true }
+serde_json = { workspace = true }
+tauri = { version = "2", features = [] }
+
+[lints]
+workspace = true
