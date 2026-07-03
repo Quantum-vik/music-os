@@ -7,6 +7,8 @@
 //! created virtually ("MusicOS Out" — enable the IAC driver on macOS);
 //! on Windows connect to a loopMIDI port by name instead.
 
+pub mod fl;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -168,10 +170,9 @@ pub fn stream(
     start_bar: u64,
     output: &Output,
     stop: &AtomicBool,
-    mut on_progress: impl FnMut(usize, usize),
+    on_progress: impl FnMut(usize, usize),
 ) -> Result<(), StreamError> {
-    let events = schedule(state, start_bar);
-    if events.is_empty() {
+    if schedule(state, start_bar).is_empty() {
         return Err(StreamError::NothingToPlay);
     }
     let midi = midir::MidiOutput::new("MusicOS").map_err(|e| StreamError::Midi(e.to_string()))?;
@@ -205,6 +206,24 @@ pub fn stream(
         }
     };
 
+    let result = stream_over(&mut connection, state, start_bar, stop, on_progress);
+    connection.close();
+    result
+}
+
+/// Streams a project over an already-open connection (shared by [`stream`]
+/// and the FL bridge's record flow). Sends all-notes-off before returning.
+pub(crate) fn stream_over(
+    connection: &mut midir::MidiOutputConnection,
+    state: &ProjectState,
+    start_bar: u64,
+    stop: &AtomicBool,
+    mut on_progress: impl FnMut(usize, usize),
+) -> Result<(), StreamError> {
+    let events = schedule(state, start_bar);
+    if events.is_empty() {
+        return Err(StreamError::NothingToPlay);
+    }
     let total = events.len();
     let started = Instant::now();
     let mut sent = 0usize;
@@ -229,7 +248,6 @@ pub fn stream(
     for channel in 0..16u8 {
         let _ = connection.send(&[0xB0 | channel, 123, 0]);
     }
-    connection.close();
     Ok(())
 }
 

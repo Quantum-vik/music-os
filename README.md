@@ -219,3 +219,21 @@ cargo build --release -p musicos-link
 
 Enable Link in your DAW (Live, FL Studio, Bitwig), point its MIDI input at
 the port, press play anywhere — everything locks to the same beat grid.
+
+### Agentic FL Studio control (MusicOS Bridge)
+
+The agent can drive a running FL Studio: transport, tempo, pattern/channel
+selection, mixer levels, plugin knobs — and record compositions straight
+into FL's piano roll.
+
+1. Copy `integrations/fl-studio/` to
+   `Documents/Image-Line/FL Studio/Settings/Hardware/MusicOS Bridge/`.
+2. In FL: Options -> MIDI settings -> enable the "MusicOS Bridge" input and
+   set its Controller type to "MusicOS Bridge". Load your instruments
+   (e.g. a guitar VST) on the channels you want played.
+3. Ask the agent: `music ai "record this song into FL through the bridge"`
+   — or call tools directly: `music call fl_control '{"action":"play"}'`,
+   `music call fl_record_song '{}'`.
+
+FL does not let scripts insert new plugin instances; keep a template
+project with your instruments loaded and the agent does the rest.

@@ -557,6 +557,136 @@ impl Tool for RenderSong {
     }
 }
 
+// --- FL Studio bridge (agentic DAW control) ---------------------------------------
+
+/// Input for `fl_control`.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct FlControlInput {
+    /// Action: `play` | `stop` | `record` | `set_tempo` | `select_pattern` |
+    /// `select_channel` | `mixer_level` | `plugin_param` | `metronome_on` |
+    /// `metronome_off`.
+    action: String,
+    /// Numeric argument: bpm, pattern, channel, or mixer track.
+    #[serde(default)]
+    value: Option<f64>,
+    /// Second argument: mixer level 0..=1, plugin param index.
+    #[serde(default)]
+    value2: Option<f64>,
+    /// Third argument: plugin param value 0..=1.
+    #[serde(default)]
+    value3: Option<f64>,
+    /// Existing MIDI port name (Windows/loopMIDI). Default: virtual port.
+    #[serde(default)]
+    port: Option<String>,
+}
+
+struct FlControl;
+
+impl Tool for FlControl {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "fl_control",
+            description: "Drive a running FL Studio (with the MusicOS Bridge \
+                          controller script installed): transport, tempo, pattern/channel \
+                          selection, mixer levels, plugin parameters, metronome.",
+            params_schema: schema::<FlControlInput>(),
+        }
+    }
+
+    fn call(&self, _ctx: &mut ProjectCtx, input: Value) -> Result<Value, ToolError> {
+        use musicos_midi_stream::fl::Transport as T;
+        let input: FlControlInput = parse(input)?;
+        let mut bridge = musicos_midi_stream::fl::FlBridge::connect(input.port.as_deref())
+            .map_err(|e| ToolError {
+                code: "E_FL_BRIDGE",
+                message: e.to_string(),
+            })?;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let result = match input.action.as_str() {
+            "play" => bridge.transport(T::Play),
+            "stop" => bridge.transport(T::Stop),
+            "record" => bridge.transport(T::Record),
+            "set_tempo" => bridge.set_tempo(input.value.unwrap_or(120.0)),
+            "select_pattern" => bridge.select_pattern(input.value.unwrap_or(1.0) as u16),
+            "select_channel" => bridge.select_channel(input.value.unwrap_or(0.0) as u16),
+            "mixer_level" => bridge.mixer_level(
+                input.value.unwrap_or(0.0) as u16,
+                input.value2.unwrap_or(0.8) as f32,
+            ),
+            "plugin_param" => bridge.plugin_param(
+                input.value.unwrap_or(0.0) as u16,
+                input.value2.unwrap_or(0.0) as u16,
+                input.value3.unwrap_or(0.5) as f32,
+            ),
+            "metronome_on" => bridge.metronome(true),
+            "metronome_off" => bridge.metronome(false),
+            other => return Err(ToolError::invalid(format!("unknown action '{other}'"))),
+        };
+        result.map_err(|e| ToolError {
+            code: "E_FL_BRIDGE",
+            message: e.to_string(),
+        })?;
+        Ok(json!({ "action": input.action, "summary": format!("FL: {}", input.action) }))
+    }
+}
+
+/// Input for `fl_record_song`.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct FlRecordSongInput {
+    /// Start bar (4/4). Default 0.
+    #[serde(default)]
+    from_bar: Option<u64>,
+    /// Existing MIDI port name (Windows/loopMIDI). Default: virtual port.
+    #[serde(default)]
+    port: Option<String>,
+}
+
+struct FlRecordSong;
+
+impl Tool for FlRecordSong {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "fl_record_song",
+            description: "Record this project into FL Studio's piano roll: sets FL's \
+                          tempo, arms recording, streams the song as live MIDI (one \
+                          channel per track), then stops. Runs in real time — a 16-bar \
+                          song takes 16 bars to record. Requires the MusicOS Bridge \
+                          script in FL and instruments loaded on the target channels.",
+            params_schema: schema::<FlRecordSongInput>(),
+        }
+    }
+
+    fn call(&self, ctx: &mut ProjectCtx, input: Value) -> Result<Value, ToolError> {
+        let input: FlRecordSongInput = parse(input)?;
+        let bridge =
+            musicos_midi_stream::fl::FlBridge::connect(input.port.as_deref()).map_err(|e| {
+                ToolError {
+                    code: "E_FL_BRIDGE",
+                    message: e.to_string(),
+                }
+            })?;
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let mut sent_total = 0usize;
+        bridge
+            .record_song(
+                ctx.state(),
+                input.from_bar.unwrap_or(0),
+                &stop,
+                |sent, _| {
+                    sent_total = sent;
+                },
+            )
+            .map_err(|e| ToolError {
+                code: "E_FL_BRIDGE",
+                message: e.to_string(),
+            })?;
+        Ok(json!({
+            "events": sent_total,
+            "summary": format!("recorded {sent_total} MIDI events into FL Studio"),
+        }))
+    }
+}
+
 // --- mix: gain / pan / mute ------------------------------------------------------
 
 /// Input for `set_track_mix`.
@@ -1174,6 +1304,8 @@ impl Registry {
                 Box::new(ImportMidi),
                 Box::new(SetTempo),
                 Box::new(RenderSong),
+                Box::new(FlControl),
+                Box::new(FlRecordSong),
                 Box::new(SetTrackMix),
                 Box::new(GenerateChords),
                 Box::new(GenerateMelody),

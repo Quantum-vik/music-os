@@ -2662,6 +2662,7 @@ dependencies = [
  "musicos-core-types",
  "musicos-harmony",
  "musicos-midi",
+ "musicos-midi-stream",
  "musicos-music-core",
  "musicos-project-model",
  "musicos-project-service",

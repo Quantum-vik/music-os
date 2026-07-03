@@ -47,6 +47,9 @@ jobs:
       - run: cargo nextest run --workspace
       # nextest does not run doctests; keep them honest here
       - run: cargo test --workspace --doc
+      - name: FL bridge protocol vectors
+        if: runner.os != 'Windows'
+        run: python3 integrations/fl-studio/test_protocol.py
       - name: Python SDK smoke
         if: runner.os != 'Windows'
         run: python3 sdk/python/tests/test_client.py
