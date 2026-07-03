@@ -22,7 +22,6 @@ musicos-telemetry = { workspace = true }
 musicos-ai-runtime = { workspace = true }
 musicos-core-types = { workspace = true }
 musicos-midi = { workspace = true }
-musicos-plugin-bitcrusher = { workspace = true }
 musicos-plugin-host = { workspace = true }
 musicos-music-core = { workspace = true }
 musicos-project-model = { workspace = true }

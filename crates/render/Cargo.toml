@@ -16,6 +16,8 @@ musicos-audio-graph = { workspace = true }
 musicos-core-types = { workspace = true }
 musicos-dsp = { workspace = true }
 musicos-instruments = { workspace = true }
+musicos-plugin-api = { workspace = true }
+musicos-plugin-host = { workspace = true }
 musicos-project-model = { workspace = true }
 thiserror = { workspace = true }
 hound = { workspace = true }

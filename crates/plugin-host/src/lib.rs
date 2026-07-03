@@ -23,6 +23,13 @@ impl HostRegistry {
         HostRegistry::default()
     }
 
+    /// A registry preloaded with the first-party plugin set.
+    pub fn with_builtins() -> HostRegistry {
+        let mut registry = HostRegistry::new();
+        registry.register(musicos_plugin_bitcrusher::Bitcrusher::factory);
+        registry
+    }
+
     /// Registers a plugin factory.
     pub fn register(&mut self, factory: PluginFactory) {
         self.factories.push(factory);

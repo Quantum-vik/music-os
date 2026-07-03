@@ -954,7 +954,9 @@ struct AddDeviceInput {
     /// `{"kind":"eq","mode":"low_pass|high_pass|peak","freq_hz":..,"q":..,"gain_db":..}`,
     /// `{"kind":"compressor","threshold_db":..,"ratio":..,"attack_ms":..,"release_ms":..,"makeup_db":..}`,
     /// `{"kind":"delay","time_ms":..,"feedback":..,"mix":..}`,
-    /// `{"kind":"reverb","room":..,"damping":..,"mix":..}`.
+    /// `{"kind":"reverb","room":..,"damping":..,"mix":..}`,
+    /// `{"kind":"plugin","id":"org.musicos.bitcrusher","params":[["bits",4.0]]}`
+    /// (ids from the `music plugins` list; unknown ids render as passthrough).
     device: Device,
 }
 
@@ -1040,6 +1042,7 @@ fn device_name(device: &Device) -> String {
         Device::Compressor { .. } => "compressor".to_string(),
         Device::Delay { .. } => "delay".to_string(),
         Device::Reverb { .. } => "reverb".to_string(),
+        Device::Plugin { id, .. } => format!("plugin:{id}"),
         _ => "unknown".to_string(),
     }
 }

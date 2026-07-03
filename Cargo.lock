@@ -981,7 +981,6 @@ dependencies = [
  "musicos-core-types",
  "musicos-midi",
  "musicos-music-core",
- "musicos-plugin-bitcrusher",
  "musicos-plugin-host",
  "musicos-project-model",
  "musicos-storage",
@@ -1132,6 +1131,8 @@ dependencies = [
  "musicos-dsp",
  "musicos-instruments",
  "musicos-music-core",
+ "musicos-plugin-api",
+ "musicos-plugin-host",
  "musicos-project-model",
  "thiserror 2.0.18",
 ]

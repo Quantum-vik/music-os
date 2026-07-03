@@ -351,8 +351,7 @@ fn run(cli: &Cli, config: &musicos_config::Config) -> anyhow::Result<Value> {
             call_tool(cli, tool, parsed)
         }
         Command::Plugins => {
-            let mut registry = musicos_plugin_host::HostRegistry::new();
-            registry.register(musicos_plugin_bitcrusher::Bitcrusher::factory);
+            let registry = musicos_plugin_host::HostRegistry::with_builtins();
             let native: Vec<Value> = registry
                 .descriptors()
                 .iter()

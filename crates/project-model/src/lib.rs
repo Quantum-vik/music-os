@@ -74,7 +74,7 @@ impl Default for ChannelStrip {
 
 /// An insert effect on a track's channel strip. Parameters are plain values
 /// (docs/09 §4); the render layer maps them onto DSP processors.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Device {
@@ -119,6 +119,13 @@ pub enum Device {
         damping: f32,
         /// Wet mix (0..=1).
         mix: f32,
+    },
+    /// A hosted plugin (native registry today, CLAP next), by reverse-DNS id.
+    Plugin {
+        /// Plugin id, e.g. `org.musicos.bitcrusher` (see `music plugins`).
+        id: String,
+        /// Parameter overrides applied after instantiation: `[param_id, value]`.
+        params: Vec<(String, f32)>,
     },
 }
 
@@ -171,6 +178,9 @@ fn validate_device(device: &Device) -> Result<(), DomainError> {
         }
         Device::Reverb { room, damping, mix } => {
             (0.0..=1.0).contains(room) && (0.0..=1.0).contains(damping) && (0.0..=1.0).contains(mix)
+        }
+        Device::Plugin { id, params } => {
+            !id.trim().is_empty() && params.iter().all(|(_, v)| v.is_finite())
         }
     };
     if ok {
@@ -451,10 +461,11 @@ impl ProjectState {
             }
             Command::RemoveDevice { track, index } => {
                 let t = self.track(track)?;
-                let device = *t
+                let device = t
                     .inserts
                     .get(index)
-                    .ok_or(DomainError::NoSuchDevice(track, index))?;
+                    .ok_or(DomainError::NoSuchDevice(track, index))?
+                    .clone();
                 Ok(vec![Event::DeviceRemoved {
                     track,
                     index,
@@ -585,7 +596,7 @@ impl ProjectState {
             } => {
                 let t = self.track_mut(*track)?;
                 let index = (*index).min(t.inserts.len());
-                t.inserts.insert(index, *device);
+                t.inserts.insert(index, device.clone());
             }
             Event::DeviceRemoved { track, index, .. } => {
                 let t = self.track_mut(*track)?;
@@ -1019,7 +1030,7 @@ impl Event {
             } => Event::DeviceRemoved {
                 track: *track,
                 index: *index,
-                device: *device,
+                device: device.clone(),
             },
             Event::DeviceRemoved {
                 track,
@@ -1028,7 +1039,7 @@ impl Event {
             } => Event::DeviceAdded {
                 track: *track,
                 index: *index,
-                device: *device,
+                device: device.clone(),
             },
             Event::TrackGainSet { track, from, to } => Event::TrackGainSet {
                 track: *track,

@@ -19,6 +19,8 @@ use musicos_dsp::{
     db_to_gain, pan_gains, BiquadMode, BiquadStereo, Compressor, Reverb, StereoBuffer, StereoDelay,
 };
 use musicos_instruments::{NoteEvent, SimpleSynth, StreamingSynth};
+use musicos_plugin_api::ProcessorPlugin;
+use musicos_plugin_host::HostRegistry;
 use musicos_project_model::{ChannelStrip, Device, EqMode, ProjectState, TrackKind};
 
 /// Render parameters.
@@ -60,6 +62,7 @@ impl Node for TrackSource {
 /// An insert-effect node wrapping a DSP processor.
 enum InsertNode {
     Passthrough,
+    Hosted(Box<dyn ProcessorPlugin>),
     Eq(BiquadStereo),
     Compressor(Compressor),
     Delay(StereoDelay),
@@ -69,6 +72,17 @@ enum InsertNode {
 impl InsertNode {
     fn build(device: Device, sample_rate: u32) -> InsertNode {
         match device {
+            Device::Plugin { id, params } => {
+                // Unknown plugin ids render as passthrough (docs/08 §5).
+                let Some(mut plugin) = HostRegistry::with_builtins().instantiate(&id) else {
+                    return InsertNode::Passthrough;
+                };
+                plugin.prepare(sample_rate, musicos_audio_graph::BLOCK);
+                for (param, value) in &params {
+                    let _ = plugin.set_param(param, *value); // unknown params skipped
+                }
+                InsertNode::Hosted(plugin)
+            }
             Device::Eq {
                 mode,
                 freq_hz,
@@ -118,6 +132,7 @@ impl Node for InsertNode {
         out.right.copy_from_slice(&inputs[0].right);
         match self {
             InsertNode::Passthrough => {}
+            InsertNode::Hosted(p) => p.process(&mut out.left, &mut out.right),
             InsertNode::Eq(p) => p.process(&mut out.left, &mut out.right),
             InsertNode::Compressor(p) => p.process(&mut out.left, &mut out.right),
             InsertNode::Delay(p) => p.process(&mut out.left, &mut out.right),
@@ -577,6 +592,42 @@ mod tests {
         let (mut again, _) = compile_project_streaming(&state, &opts).unwrap();
         let (left2, _) = again.render(s_total);
         assert_eq!(left, left2);
+    }
+
+    #[test]
+    fn a_hosted_plugin_insert_changes_the_sound() {
+        let mut state = demo_project();
+        let opts = RenderOptions::default();
+        let dry = render_project(&state, &opts).unwrap();
+        state
+            .dispatch(Command::AddDevice {
+                track: TrackId(0),
+                device: musicos_project_model::Device::Plugin {
+                    id: "org.musicos.bitcrusher".to_string(),
+                    params: vec![("bits".to_string(), 3.0), ("downsample".to_string(), 8.0)],
+                },
+            })
+            .unwrap();
+        let crushed = render_project(&state, &opts).unwrap();
+        assert_ne!(dry, crushed, "bitcrusher must alter the audio");
+        assert_eq!(
+            crushed,
+            render_project(&state, &opts).unwrap(),
+            "still deterministic"
+        );
+
+        // Unknown plugin ids are passthrough, never an error.
+        let mut unknown = demo_project();
+        unknown
+            .dispatch(Command::AddDevice {
+                track: TrackId(0),
+                device: musicos_project_model::Device::Plugin {
+                    id: "org.example.missing".to_string(),
+                    params: vec![],
+                },
+            })
+            .unwrap();
+        assert_eq!(render_project(&unknown, &opts).unwrap(), dry);
     }
 
     #[test]
