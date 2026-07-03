@@ -977,6 +977,10 @@ dependencies = [
 [[package]]
 name = "musicos-rhythm"
 version = "0.0.1"
+dependencies = [
+ "musicos-core-types",
+ "musicos-music-core",
+]
 
 [[package]]
 name = "musicos-sdk"
