@@ -16,6 +16,7 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 clap = { workspace = true }
 musicos-ai-providers = { workspace = true }
+musicos-audio-engine = { workspace = true }
 musicos-ai-runtime = { workspace = true }
 musicos-core-types = { workspace = true }
 musicos-midi = { workspace = true }

@@ -27,6 +27,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 midly = "0.5"
 hound = "3.5"
 ureq = { version = "2", features = ["json"] }
+cpal = "0.15"
+rtrb = "0.3"
 proptest = "1"
 criterion = "0.5"
 
@@ -45,6 +47,7 @@ musicos-audio-graph = { path = "crates/audio-graph" }
 musicos-dsp = { path = "crates/dsp" }
 musicos-instruments = { path = "crates/instruments" }
 musicos-render = { path = "crates/render" }
+musicos-audio-engine = { path = "crates/audio-engine" }
 musicos-mcp-server = { path = "crates/mcp-server" }
 musicos-ai-runtime = { path = "crates/ai-runtime" }
 musicos-ai-providers = { path = "crates/ai-providers" }
