@@ -1,0 +1,20 @@
+[package]
+name = "musicos-player"
+description = "MusicOS Player: a CLAP plugin that plays a .musicos project inside any host DAW."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+clap-sys = { workspace = true }
+musicos-render = { workspace = true }
+musicos-storage = { workspace = true }
+
+[lints]
+workspace = true

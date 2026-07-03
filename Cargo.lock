@@ -2387,6 +2387,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "musicos-player"
+version = "0.0.1"
+dependencies = [
+ "clap-sys",
+ "musicos-render",
+ "musicos-storage",
+]
+
+[[package]]
 name = "musicos-plugin-api"
 version = "0.0.1"
 dependencies = [

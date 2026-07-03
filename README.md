@@ -174,3 +174,21 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Significant decisions require an
 ## License
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
+
+## Use MusicOS inside your DAW (FL Studio, Bitwig, Reaper, ...)
+
+MusicOS ships a CLAP plugin, **MusicOS Player** (`plugins/player`), that
+plays a `.musicos` project inside any plugin host, synced to the host
+transport:
+
+1. Build it: `cargo build --release -p musicos-player`
+2. Copy/rename the built library to your CLAP folder, e.g. on macOS:
+   `cp target/release/libmusicos_player.dylib ~/Library/Audio/Plug-Ins/CLAP/"MusicOS Player.clap"`
+3. Point it at a project: `export MUSICOS_PROJECT=/path/to/Song.musicos`
+   (or write the path to `~/.musicos/player-project.txt`), then start your DAW
+   from that shell and add "MusicOS Player" as an instrument.
+
+For hosts without CLAP support (e.g. current FL Studio), wrap the `.clap`
+into a VST3 with the MIT-licensed [clap-wrapper](https://github.com/free-audio/clap-wrapper)
+— the standard route used by Surge and friends; no VST3 SDK license enters
+this repository.

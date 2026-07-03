@@ -7,7 +7,12 @@ semantic versioning. Project format compatibility is governed separately by
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- DAW bridge: **MusicOS Player** CLAP plugin (`plugins/player`) — plays a
+  `.musicos` project inside any host (FL Studio via clap-wrapper VST3,
+  Bitwig/Reaper natively), synced to the host transport (seconds timeline,
+  beats+tempo fallback, free-run without transport); project chosen via
+  `MUSICOS_PROJECT` or `~/.musicos/player-project.txt`.
 
 ## [0.1.1] - 2026-07-03
 
