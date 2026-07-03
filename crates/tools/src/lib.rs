@@ -727,8 +727,14 @@ impl Tool for GenerateChords {
 /// Input for `generate_melody`.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct GenerateMelodyInput {
-    /// Chord symbols, one per bar, e.g. `["Am","F","C","G"]`.
-    progression: Vec<String>,
+    /// Chord symbols, one per bar, e.g. `["Am","F","C","G"]`. Omit to derive
+    /// the progression from `key`/`scale`/`bars`/`seed` — identical to what
+    /// `generate_chords` produces with the same inputs.
+    #[serde(default)]
+    progression: Option<Vec<String>>,
+    /// Number of bars when `progression` is omitted. Default 8.
+    #[serde(default)]
+    bars: Option<usize>,
     /// Key root note name for scale-step passing tones, e.g. "A".
     key: String,
     /// Scale (see `generate_chords`). Default "major".
@@ -760,8 +766,16 @@ impl Tool for GenerateMelody {
 
     fn call(&self, ctx: &mut ProjectCtx, input: Value) -> Result<Value, ToolError> {
         let input: GenerateMelodyInput = parse(input)?;
-        let progression = parse_progression(&input.progression)?;
         let scale = parse_scale(&input.key, input.scale.as_deref().unwrap_or("major"))?;
+        let progression = if let Some(symbols) = &input.progression {
+            parse_progression(symbols)?
+        } else {
+            musicos_composition::generate_chords(
+                scale,
+                input.bars.unwrap_or(8),
+                Seed(input.seed.unwrap_or(0)),
+            )
+        };
         let pattern = generate_melody(&progression, scale, Seed(input.seed.unwrap_or(0)));
         let (track_id, notes) = insert_generated(
             ctx,
@@ -774,7 +788,7 @@ impl Tool for GenerateMelody {
             "track_id": track_id,
             "notes": notes,
             "summary": format!("melody on track {track_id}: {notes} notes over {} bars",
-                input.progression.len()),
+                progression.len()),
         }))
     }
 }
@@ -782,8 +796,19 @@ impl Tool for GenerateMelody {
 /// Input for `generate_bass`.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct GenerateBassInput {
-    /// Chord symbols, one per bar.
-    progression: Vec<String>,
+    /// Chord symbols, one per bar. Omit to derive from
+    /// `key`/`scale`/`bars`/`seed` (matches `generate_chords`).
+    #[serde(default)]
+    progression: Option<Vec<String>>,
+    /// Key root when `progression` is omitted. Default "C".
+    #[serde(default)]
+    key: Option<String>,
+    /// Scale when `progression` is omitted. Default "major".
+    #[serde(default)]
+    scale: Option<String>,
+    /// Number of bars when `progression` is omitted. Default 8.
+    #[serde(default)]
+    bars: Option<usize>,
     /// Random seed. Default 0.
     #[serde(default)]
     seed: Option<u64>,
@@ -809,7 +834,19 @@ impl Tool for GenerateBass {
 
     fn call(&self, ctx: &mut ProjectCtx, input: Value) -> Result<Value, ToolError> {
         let input: GenerateBassInput = parse(input)?;
-        let progression = parse_progression(&input.progression)?;
+        let progression = if let Some(symbols) = &input.progression {
+            parse_progression(symbols)?
+        } else {
+            let scale = parse_scale(
+                input.key.as_deref().unwrap_or("C"),
+                input.scale.as_deref().unwrap_or("major"),
+            )?;
+            musicos_composition::generate_chords(
+                scale,
+                input.bars.unwrap_or(8),
+                Seed(input.seed.unwrap_or(0)),
+            )
+        };
         let pattern = generate_bass(&progression, Seed(input.seed.unwrap_or(0)));
         let (track_id, notes) = insert_generated(
             ctx,
@@ -893,8 +930,10 @@ struct SectionInput {
 /// Input for `add_section_markers`.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct AddSectionMarkersInput {
-    /// Sections in timeline order.
-    sections: Vec<SectionInput>,
+    /// Sections in timeline order. Omit for a default intro/A/B/outro plan
+    /// spread over the project's current length.
+    #[serde(default)]
+    sections: Option<Vec<SectionInput>>,
     /// Bar the first section starts at. Default 0.
     #[serde(default)]
     start_bar: Option<usize>,
@@ -916,9 +955,35 @@ impl Tool for AddSectionMarkers {
 
     fn call(&self, ctx: &mut ProjectCtx, input: Value) -> Result<Value, ToolError> {
         let input: AddSectionMarkersInput = parse(input)?;
+        let sections = input.sections.unwrap_or_else(|| {
+            // Default plan: quarter the project's current length (min 1 bar
+            // each) into intro / A / B / outro.
+            let end = ctx
+                .state()
+                .tracks
+                .iter()
+                .flat_map(|t| &t.placements)
+                .map(|p| {
+                    let clip = &ctx.state().clips[&p.clip];
+                    (p.at + clip.pattern.length()).0
+                })
+                .max()
+                .unwrap_or(0);
+            #[allow(clippy::cast_sign_loss)]
+            let total_bars = ((end.max(0) as u64)
+                .div_ceil(u64::try_from(musicos_core_types::PPQ * 4).expect("positive")))
+            .max(4) as usize;
+            let quarter = (total_bars / 4).max(1);
+            ["intro", "A", "B", "outro"]
+                .into_iter()
+                .map(|name| SectionInput {
+                    name: name.to_string(),
+                    bars: quarter,
+                })
+                .collect()
+        });
         let plan = SectionPlan::new(
-            input
-                .sections
+            sections
                 .into_iter()
                 .map(|s| Section {
                     name: s.name,
