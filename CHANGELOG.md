@@ -7,6 +7,10 @@ semantic versioning. Project format compatibility is governed separately by
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.1] - 2026-07-03
+
 ### Added
 - Deterministic symbolic core: integer musical time (960 PPQ), seeded
   generators for chords/melody/bass/drums (functional-harmony grammar,
