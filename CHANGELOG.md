@@ -9,6 +9,21 @@ semantic versioning. Project format compatibility is governed separately by
 
 Nothing yet.
 
+## [0.1.4] - 2026-07-04
+
+### Added
+- Agentic FL Studio control (MusicOS Bridge): an FL MIDI Controller Script
+  (`integrations/fl-studio/`) plus `fl_control` / `fl_record_song` agent
+  tools — the AI drives FL's transport, tempo, pattern/channel selection,
+  mixer, and plugin parameters, and records compositions into FL's piano
+  roll over a virtual MIDI port (SysEx protocol, CI-verified vectors).
+
+### Fixed
+- Desktop: melody/bass generation from the GUI (progression now derived
+  from key/scale/bars/seed when omitted); section markers default plan;
+  `music-server` bundled inside the app as a resource so the AI Producer
+  panel works in installed builds.
+
 ## [0.1.3] - 2026-07-03
 
 ### Added
