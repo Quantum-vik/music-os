@@ -23,6 +23,7 @@ musicos-ai-runtime = { workspace = true }
 musicos-core-types = { workspace = true }
 musicos-midi = { workspace = true }
 musicos-plugin-host = { workspace = true }
+musicos-render = { workspace = true }
 musicos-music-core = { workspace = true }
 musicos-project-model = { workspace = true }
 musicos-storage = { workspace = true }

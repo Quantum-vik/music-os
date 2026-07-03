@@ -93,6 +93,8 @@ pub enum BiquadMode {
     HighPass,
     /// Peaking EQ (uses `gain_db`).
     Peak,
+    /// High shelf (uses `gain_db`), per the RBJ cookbook.
+    HighShelf,
 }
 
 /// A stereo biquad filter (Direct Form I, f64 state).
@@ -142,6 +144,17 @@ impl BiquadStereo {
                 -2.0 * cos,
                 1.0 - alpha / a,
             ),
+            BiquadMode::HighShelf => {
+                let two_sqrt_a_alpha = 2.0 * a.sqrt() * alpha;
+                (
+                    a * ((a + 1.0) + (a - 1.0) * cos + two_sqrt_a_alpha),
+                    -2.0 * a * ((a - 1.0) + (a + 1.0) * cos),
+                    a * ((a + 1.0) + (a - 1.0) * cos - two_sqrt_a_alpha),
+                    (a + 1.0) - (a - 1.0) * cos + two_sqrt_a_alpha,
+                    2.0 * ((a - 1.0) - (a + 1.0) * cos),
+                    (a + 1.0) - (a - 1.0) * cos - two_sqrt_a_alpha,
+                )
+            }
         };
         BiquadStereo {
             b0: b0 / a0,
@@ -358,6 +371,8 @@ impl Reverb {
         }
     }
 }
+
+pub mod loudness;
 
 #[cfg(test)]
 mod processor_tests {

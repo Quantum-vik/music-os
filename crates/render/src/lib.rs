@@ -32,6 +32,9 @@ pub struct RenderOptions {
     pub tail_seconds: f32,
     /// Peak ceiling as linear gain (0.891 ≈ −1 dBFS).
     pub peak_ceiling: f32,
+    /// Master to this integrated loudness (LUFS) before the ceiling stage.
+    /// `None` renders at natural level (peak-limited only).
+    pub master_lufs: Option<f32>,
 }
 
 impl Default for RenderOptions {
@@ -40,6 +43,7 @@ impl Default for RenderOptions {
             sample_rate: 48_000,
             tail_seconds: 0.5,
             peak_ceiling: 0.891,
+            master_lufs: None,
         }
     }
 }
@@ -389,7 +393,8 @@ pub fn render_to_wav(
     opts: &RenderOptions,
     path: &Path,
 ) -> Result<RenderReport, RenderError> {
-    let buffer = render_project(state, opts)?;
+    let mut buffer = render_project(state, opts)?;
+    let lufs = master(&mut buffer, opts);
     let spec = hound::WavSpec {
         channels: 2,
         sample_rate: opts.sample_rate,
@@ -406,7 +411,29 @@ pub fn render_to_wav(
         frames: buffer.frames(),
         seconds,
         peak: buffer.peak(),
+        lufs,
     })
+}
+
+/// Loudness-targeted mastering (docs/12 Phase 6): measure integrated
+/// loudness, apply make-up gain toward the target, and hold the peak ceiling
+/// with a limiter. Returns the final measured loudness when measurable.
+fn master(buffer: &mut musicos_dsp::StereoBuffer, opts: &RenderOptions) -> Option<f64> {
+    let measured =
+        musicos_dsp::loudness::integrated_lufs(&buffer.left, &buffer.right, opts.sample_rate)?;
+    if let Some(target) = opts.master_lufs {
+        let gain = musicos_dsp::db_to_gain((f64::from(target) - measured) as f32);
+        buffer.apply_gain(gain);
+        let mut limiter =
+            musicos_dsp::loudness::Limiter::new(opts.sample_rate, opts.peak_ceiling, 50.0);
+        limiter.process(&mut buffer.left, &mut buffer.right);
+        return musicos_dsp::loudness::integrated_lufs(
+            &buffer.left,
+            &buffer.right,
+            opts.sample_rate,
+        );
+    }
+    Some(measured)
 }
 
 /// What a render produced.
@@ -418,6 +445,71 @@ pub struct RenderReport {
     pub seconds: f64,
     /// Peak level after limiting (linear).
     pub peak: f32,
+    /// Integrated loudness (LUFS) of the written audio, when measurable.
+    pub lufs: Option<f64>,
+}
+
+/// Loudness/peak analysis of an existing WAV file.
+#[derive(Debug, Clone, Copy)]
+pub struct WavAnalysis {
+    /// Frames per channel.
+    pub frames: usize,
+    /// Sample rate in Hz.
+    pub sample_rate: u32,
+    /// Duration in seconds.
+    pub seconds: f64,
+    /// Sample peak (linear).
+    pub peak: f32,
+    /// Integrated loudness (LUFS), when measurable.
+    pub lufs: Option<f64>,
+}
+
+/// Measures peak and integrated loudness of a mono or stereo WAV file.
+///
+/// # Errors
+/// Fails on unreadable or non-PCM files.
+pub fn analyze_wav(path: &Path) -> Result<WavAnalysis, RenderError> {
+    let mut reader = hound::WavReader::open(path)?;
+    let spec = reader.spec();
+    let channels = usize::from(spec.channels.max(1));
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<_, _>>()?,
+        hound::SampleFormat::Int => {
+            let scale = f32::from(i16::MAX);
+            match spec.bits_per_sample {
+                16 => reader
+                    .samples::<i16>()
+                    .map(|s| s.map(|v| f32::from(v) / scale))
+                    .collect::<Result<_, _>>()?,
+                24 | 32 => {
+                    let scale = ((1i64 << (spec.bits_per_sample - 1)) - 1) as f32;
+                    reader
+                        .samples::<i32>()
+                        .map(|s| s.map(|v| v as f32 / scale))
+                        .collect::<Result<_, _>>()?
+                }
+                other => return Err(RenderError::UnsupportedWav(other)),
+            }
+        }
+    };
+    let frames = samples.len() / channels;
+    let mut left = Vec::with_capacity(frames);
+    let mut right = Vec::with_capacity(frames);
+    for frame in samples.chunks_exact(channels) {
+        left.push(frame[0]);
+        right.push(if channels > 1 { frame[1] } else { frame[0] });
+    }
+    let peak = left
+        .iter()
+        .chain(right.iter())
+        .fold(0.0f32, |m, s| m.max(s.abs()));
+    Ok(WavAnalysis {
+        frames,
+        sample_rate: spec.sample_rate,
+        seconds: frames as f64 / f64::from(spec.sample_rate),
+        peak,
+        lufs: musicos_dsp::loudness::integrated_lufs(&left, &right, spec.sample_rate),
+    })
 }
 
 fn sample_at(state: &ProjectState, tick: Tick, sample_rate: u32) -> usize {
@@ -438,6 +530,9 @@ pub enum RenderError {
     /// WAV encoding failure.
     #[error("wav: {0}")]
     Wav(#[from] hound::Error),
+    /// The WAV bit depth is not supported by the analyzer.
+    #[error("unsupported WAV bit depth: {0}")]
+    UnsupportedWav(u16),
 }
 
 #[cfg(test)]
@@ -446,6 +541,34 @@ mod tests {
     use musicos_core_types::{Pitch, ProjectId, Tick, TrackId, Velocity, PPQ};
     use musicos_music_core::{Note, Pattern};
     use musicos_project_model::Command;
+
+    /// Mastering targets integrated loudness and analyze_wav reads it back.
+    #[test]
+    fn mastering_hits_the_loudness_target() {
+        let state = demo_project();
+        let opts = RenderOptions {
+            master_lufs: Some(-16.0),
+            ..RenderOptions::default()
+        };
+        let dir = std::env::temp_dir().join(format!("musicos-master-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mastered.wav");
+        let report = render_to_wav(&state, &opts, &path).unwrap();
+        let rendered = report.lufs.expect("loudness measurable");
+        assert!(
+            (rendered - (-16.0)).abs() < 1.0,
+            "rendered loudness {rendered:.2} not near -16"
+        );
+        assert!(report.peak <= opts.peak_ceiling + 1e-3);
+
+        let analysis = analyze_wav(&path).unwrap();
+        let analyzed = analysis.lufs.expect("loudness measurable");
+        assert!(
+            (analyzed - rendered).abs() < 0.2,
+            "file loudness {analyzed:.2} != render report {rendered:.2}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn demo_project() -> ProjectState {
         let mut s = ProjectState::new(ProjectId(1), "Render");

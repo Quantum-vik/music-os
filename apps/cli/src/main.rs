@@ -100,6 +100,14 @@ enum Command {
         /// Sample rate in Hz. Defaults to config `render.sample_rate`.
         #[arg(long)]
         rate: Option<u32>,
+        /// Master to this integrated loudness in LUFS (e.g. -14).
+        #[arg(long, allow_hyphen_values = true)]
+        master: Option<f32>,
+    },
+    /// Measure peak and integrated loudness (LUFS) of a WAV file.
+    Analyze {
+        /// The .wav file to analyze.
+        file: PathBuf,
     },
     /// Run an AI production agent over the project (subscription or API).
     Ai {
@@ -297,14 +305,40 @@ fn run(cli: &Cli, config: &musicos_config::Config) -> anyhow::Result<Value> {
             "set_track_mix",
             json!({ "track_id": track, "gain_db": gain, "pan": pan, "muted": mute }),
         ),
-        Command::Render { output, rate } => call_tool(
+        Command::Render {
+            output,
+            rate,
+            master,
+        } => call_tool(
             cli,
             "render_song",
             json!({
                 "output": output.display().to_string(),
                 "sample_rate": rate.unwrap_or(config.render.sample_rate),
+                "master_lufs": master,
             }),
         ),
+        Command::Analyze { file } => {
+            let a = musicos_render::analyze_wav(file)?;
+            Ok(json!({
+                "file": file.display().to_string(),
+                "frames": a.frames,
+                "sample_rate": a.sample_rate,
+                "seconds": a.seconds,
+                "peak": a.peak,
+                "lufs": a.lufs,
+                "summary": format!(
+                    "{:.1}s @ {} Hz, peak {:.3}, {}",
+                    a.seconds,
+                    a.sample_rate,
+                    a.peak,
+                    a.lufs.map_or_else(
+                        || "loudness unmeasurable".to_string(),
+                        |l| format!("{l:.1} LUFS")
+                    )
+                ),
+            }))
+        }
         Command::Ai {
             brief,
             provider,

@@ -466,6 +466,10 @@ struct RenderSongInput {
     /// Sample rate in Hz (default 48000).
     #[serde(default)]
     sample_rate: Option<u32>,
+    /// Master to this integrated loudness in LUFS (e.g. -14.0 for streaming
+    /// platforms). Omit to render at natural level.
+    #[serde(default)]
+    master_lufs: Option<f32>,
 }
 
 struct RenderSong;
@@ -492,6 +496,12 @@ impl Tool for RenderSong {
             }
             opts.sample_rate = rate;
         }
+        if let Some(target) = input.master_lufs {
+            if !(-40.0..=0.0).contains(&target) {
+                return Err(ToolError::invalid("master_lufs must be within -40..=0"));
+            }
+            opts.master_lufs = Some(target);
+        }
         let path = std::path::PathBuf::from(&input.output);
         let report =
             musicos_render::render_to_wav(ctx.state(), &opts, &path).map_err(|e| ToolError {
@@ -503,9 +513,17 @@ impl Tool for RenderSong {
             "seconds": report.seconds,
             "frames": report.frames,
             "peak": report.peak,
+            "lufs": report.lufs,
             "summary": format!(
-                "rendered {:.1}s ({} frames, peak {:.2}) -> {}",
-                report.seconds, report.frames, report.peak, input.output
+                "rendered {:.1}s ({} frames, peak {:.2}, {}) -> {}",
+                report.seconds,
+                report.frames,
+                report.peak,
+                report.lufs.map_or_else(
+                    || "loudness unmeasurable".to_string(),
+                    |l| format!("{l:.1} LUFS")
+                ),
+                input.output
             ),
         }))
     }

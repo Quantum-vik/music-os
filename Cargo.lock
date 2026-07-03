@@ -2277,6 +2277,7 @@ dependencies = [
  "musicos-music-core",
  "musicos-plugin-host",
  "musicos-project-model",
+ "musicos-render",
  "musicos-storage",
  "musicos-telemetry",
  "musicos-tools",
