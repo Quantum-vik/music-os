@@ -293,9 +293,8 @@ impl ClapInstance {
     }
 }
 
-/// A one-event input list for parameter flushes.
-struct OneParamEvent(clap_event_param_value);
-
+// A one-event input list for parameter flushes: `ctx` points at a
+// `clap_event_param_value`, whose first field is its header (repr(C)).
 unsafe extern "C" fn one_event_size(list: *const clap_input_events) -> u32 {
     u32::from(!unsafe { (*list).ctx }.is_null())
 }
@@ -304,9 +303,7 @@ unsafe extern "C" fn one_event_get(
     index: u32,
 ) -> *const clap_event_header {
     if index == 0 {
-        unsafe { (*list).ctx }
-            .cast::<OneParamEvent>()
-            .cast::<clap_event_header>()
+        unsafe { (*list).ctx }.cast::<clap_event_header>()
     } else {
         std::ptr::null()
     }
@@ -384,7 +381,7 @@ impl ProcessorPlugin for ClapInstance {
         let Some(flush) = flush else {
             return Err(PluginError::UnknownParam(id.to_string()));
         };
-        let mut event = OneParamEvent(clap_event_param_value {
+        let mut event = clap_event_param_value {
             header: clap_event_header {
                 size: std::mem::size_of::<clap_event_param_value>() as u32,
                 time: 0,
@@ -399,7 +396,7 @@ impl ProcessorPlugin for ClapInstance {
             channel: -1,
             key: -1,
             value: f64::from(value),
-        });
+        };
         let list = clap_input_events {
             ctx: (&raw mut event).cast(),
             size: Some(one_event_size),

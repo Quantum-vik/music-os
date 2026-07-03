@@ -194,6 +194,9 @@ impl Player {
             }
             let h = unsafe { &*header };
             if h.space_id == CLAP_CORE_EVENT_SPACE_ID && h.type_ == CLAP_EVENT_PARAM_VALUE {
+                // Hosts allocate param events with their natural alignment;
+                // the header is the event's first field (CLAP ABI).
+                #[allow(clippy::cast_ptr_alignment)]
                 let ev = unsafe { &*header.cast::<clap_event_param_value>() };
                 if ev.param_id == PARAM_PROJECT {
                     self.select(ev.value);
@@ -502,13 +505,14 @@ unsafe extern "C" fn state_load(plugin: *const clap_plugin, stream: *const clap_
         return true;
     }
     let path = PathBuf::from(String::from_utf8_lossy(&bytes).into_owned());
-    let index = match player.library.iter().position(|p| *p == path) {
-        Some(i) => i,
-        None => {
+    let index = player
+        .library
+        .iter()
+        .position(|p| *p == path)
+        .unwrap_or_else(|| {
             player.library.push(path);
             player.library.len() - 1
-        }
-    };
+        });
     player.selected = u32::MAX; // force reload even if index matches
     player.select(index as f64);
     true
