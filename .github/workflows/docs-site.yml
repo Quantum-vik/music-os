@@ -29,9 +29,6 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    # Non-blocking until Pages is enabled (Settings -> Pages -> Source:
-    # "GitHub Actions"). Note: enabling it makes the docs publicly reachable.
-    continue-on-error: true
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
