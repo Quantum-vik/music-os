@@ -35,8 +35,8 @@
     ],
     "shortDescription": "Operating system for autonomous music production",
     "category": "Music",
-    "externalBin": [
-      "binaries/music-server"
+    "resources": [
+      "binaries/*"
     ]
   }
 }

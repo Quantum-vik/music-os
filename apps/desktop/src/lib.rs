@@ -116,9 +116,29 @@ fn playback_status() -> Value {
     }
 }
 
+/// Locates `music-server`: the bundled resource first (installed app),
+/// then the workspace/PATH discovery used in development.
+fn server_binary(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    use tauri::Manager as _;
+    let name = if cfg!(windows) {
+        "binaries/music-server.exe"
+    } else {
+        "binaries/music-server"
+    };
+    if let Ok(resource) = app
+        .path()
+        .resolve(name, tauri::path::BaseDirectory::Resource)
+    {
+        if resource.is_file() {
+            return Ok(resource);
+        }
+    }
+    musicos_ai_providers::find_server_binary().map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)] // tauri commands receive owned args
-fn ai_run(project: String, brief: String) -> Result<Value, String> {
+fn ai_run(app: tauri::AppHandle, project: String, brief: String) -> Result<Value, String> {
     {
         let mut run = AI_RUN.lock().expect("ai lock");
         if run.running {
@@ -127,17 +147,20 @@ fn ai_run(project: String, brief: String) -> Result<Value, String> {
         run.running = true;
         run.transcript = "starting Claude (subscription)...".into();
     }
+    let server_bin = match server_binary(&app) {
+        Ok(path) => path,
+        Err(e) => {
+            AI_RUN.lock().expect("ai lock").running = false;
+            return Err(e);
+        }
+    };
     std::thread::spawn(move || {
-        let result = musicos_ai_providers::find_server_binary()
-            .map_err(|e| e.to_string())
-            .and_then(|server_bin| {
-                musicos_ai_providers::SubscriptionRunner {
-                    server_bin,
-                    project: std::path::PathBuf::from(&project),
-                }
-                .run_captured(&brief)
-                .map_err(|e| e.to_string())
-            });
+        let result = musicos_ai_providers::SubscriptionRunner {
+            server_bin,
+            project: std::path::PathBuf::from(&project),
+        }
+        .run_captured(&brief)
+        .map_err(|e| e.to_string());
         let mut run = AI_RUN.lock().expect("ai lock");
         run.running = false;
         run.transcript = match result {
