@@ -43,6 +43,7 @@ LAYERS = {
     "musicos-ai-runtime": 3,
     "musicos-tools": 3,
     # 4 — protocol surfaces & provider adapters
+    "musicos-plugin-bitcrusher": 3,
     "musicos-ai-providers": 4,
     "musicos-mcp-server": 4,
     "musicos-sdk": 4,

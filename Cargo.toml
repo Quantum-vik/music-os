@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["apps/cli", "apps/server", "crates/*", "sdk/rust"]
+members = ["apps/cli", "apps/server", "crates/*", "plugins/*", "sdk/rust"]
 
 [workspace.package]
 version = "0.0.1"
@@ -56,6 +56,9 @@ musicos-ai-providers = { path = "crates/ai-providers" }
 musicos-project-service = { path = "crates/project-service" }
 musicos-config = { path = "crates/config" }
 musicos-telemetry = { path = "crates/telemetry" }
+musicos-plugin-api = { path = "crates/plugin-api" }
+musicos-plugin-host = { path = "crates/plugin-host" }
+musicos-plugin-bitcrusher = { path = "plugins/bitcrusher" }
 
 [workspace.lints.rust]
 missing_docs = "deny"

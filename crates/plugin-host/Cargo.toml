@@ -9,6 +9,10 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+musicos-plugin-api = { workspace = true }
+
+[dev-dependencies]
+musicos-plugin-bitcrusher = { workspace = true }
 
 [lints]
 workspace = true

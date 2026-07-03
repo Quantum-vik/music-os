@@ -124,6 +124,8 @@ enum Command {
         #[arg(default_value = "{}")]
         input: String,
     },
+    /// List native plugins and installed CLAP bundles.
+    Plugins,
     /// List every registered tool and its JSON input schema.
     Tools,
     /// File-level MIDI utilities (no project needed).
@@ -347,6 +349,33 @@ fn run(cli: &Cli, config: &musicos_config::Config) -> anyhow::Result<Value> {
             let parsed: Value = serde_json::from_str(input)
                 .map_err(|e| anyhow::anyhow!("input is not valid JSON: {e}"))?;
             call_tool(cli, tool, parsed)
+        }
+        Command::Plugins => {
+            let mut registry = musicos_plugin_host::HostRegistry::new();
+            registry.register(musicos_plugin_bitcrusher::Bitcrusher::factory);
+            let native: Vec<Value> = registry
+                .descriptors()
+                .iter()
+                .map(|d| {
+                    json!({
+                        "id": d.id, "name": d.name, "vendor": d.vendor,
+                        "version": d.version, "kind": format!("{:?}", d.kind),
+                    })
+                })
+                .collect();
+            let clap: Vec<String> = musicos_plugin_host::discover_clap()
+                .iter()
+                .map(|c| c.path.display().to_string())
+                .collect();
+            Ok(json!({
+                "native": native,
+                "clap": clap,
+                "summary": format!(
+                    "{} native plugin(s), {} CLAP bundle(s) installed (loading lands next)",
+                    native.len(),
+                    clap.len()
+                ),
+            }))
         }
         Command::Tools => {
             let specs: Vec<Value> = Registry::new()

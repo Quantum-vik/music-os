@@ -981,6 +981,8 @@ dependencies = [
  "musicos-core-types",
  "musicos-midi",
  "musicos-music-core",
+ "musicos-plugin-bitcrusher",
+ "musicos-plugin-host",
  "musicos-project-model",
  "musicos-storage",
  "musicos-telemetry",
@@ -1078,10 +1080,24 @@ dependencies = [
 [[package]]
 name = "musicos-plugin-api"
 version = "0.0.1"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "musicos-plugin-bitcrusher"
+version = "0.0.1"
+dependencies = [
+ "musicos-plugin-api",
+]
 
 [[package]]
 name = "musicos-plugin-host"
 version = "0.0.1"
+dependencies = [
+ "musicos-plugin-api",
+ "musicos-plugin-bitcrusher",
+]
 
 [[package]]
 name = "musicos-project-model"
