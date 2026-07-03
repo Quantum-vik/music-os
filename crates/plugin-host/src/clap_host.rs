@@ -310,6 +310,13 @@ unsafe extern "C" fn one_event_get(
 }
 
 impl ClapInstance {
+    /// True when the plugin provides the given CLAP extension id
+    /// (e.g. `c"clap.gui"`).
+    pub fn has_extension(&self, id: &CStr) -> bool {
+        unsafe { (*self.plugin).get_extension }
+            .is_some_and(|get| !unsafe { get(self.plugin, id.as_ptr()) }.is_null())
+    }
+
     fn clap_params(&self) -> Vec<clap_param_info> {
         let ext = self.params_ext;
         if ext.is_null() {

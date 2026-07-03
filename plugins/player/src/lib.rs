@@ -27,6 +27,7 @@ use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE, CLAP_TRANSPORT_HAS_SECONDS_TIMELINE,
     CLAP_TRANSPORT_HAS_TEMPO, CLAP_TRANSPORT_IS_PLAYING,
 };
+use clap_sys::ext::gui::{clap_plugin_gui, clap_window, CLAP_EXT_GUI};
 use clap_sys::ext::params::{
     clap_param_info, clap_plugin_params, CLAP_EXT_PARAMS, CLAP_PARAM_IS_STEPPED,
 };
@@ -535,12 +536,140 @@ unsafe extern "C" fn plugin_get_extension(
         (&raw const PARAMS_VTABLE).cast()
     } else if id == CLAP_EXT_STATE {
         (&raw const STATE_VTABLE).cast()
+    } else if id == CLAP_EXT_GUI {
+        (&raw const GUI_VTABLE).cast()
     } else {
         std::ptr::null()
     }
 }
 
 unsafe extern "C" fn plugin_on_main_thread(_plugin: *const clap_plugin) {}
+
+// --- gui extension --------------------------------------------------------------
+//
+// v1 GUI: a floating native project-picker. `show()` opens the platform's
+// file dialog (main thread, as CLAP guarantees for gui calls); picking a
+// `.musicos` bundle adds it to the library, selects it, and re-renders in
+// the background. A full custom panel can replace this without changing
+// the host-facing surface.
+
+unsafe extern "C" fn gui_is_api_supported(
+    _plugin: *const clap_plugin,
+    _api: *const c_char,
+    is_floating: bool,
+) -> bool {
+    is_floating
+}
+
+unsafe extern "C" fn gui_get_preferred_api(
+    _plugin: *const clap_plugin,
+    _api: *mut *const c_char,
+    is_floating: *mut bool,
+) -> bool {
+    if !is_floating.is_null() {
+        unsafe { *is_floating = true };
+    }
+    true
+}
+
+unsafe extern "C" fn gui_create(
+    _plugin: *const clap_plugin,
+    _api: *const c_char,
+    is_floating: bool,
+) -> bool {
+    is_floating
+}
+
+unsafe extern "C" fn gui_destroy(_plugin: *const clap_plugin) {}
+
+unsafe extern "C" fn gui_set_scale(_plugin: *const clap_plugin, _scale: f64) -> bool {
+    true
+}
+
+unsafe extern "C" fn gui_get_size(
+    _plugin: *const clap_plugin,
+    width: *mut u32,
+    height: *mut u32,
+) -> bool {
+    if !width.is_null() {
+        unsafe { *width = 0 };
+    }
+    if !height.is_null() {
+        unsafe { *height = 0 };
+    }
+    true
+}
+
+unsafe extern "C" fn gui_can_resize(_plugin: *const clap_plugin) -> bool {
+    false
+}
+
+unsafe extern "C" fn gui_set_parent(
+    _plugin: *const clap_plugin,
+    _window: *const clap_window,
+) -> bool {
+    false // floating only
+}
+
+unsafe extern "C" fn gui_set_transient(
+    _plugin: *const clap_plugin,
+    _window: *const clap_window,
+) -> bool {
+    true
+}
+
+unsafe extern "C" fn gui_suggest_title(_plugin: *const clap_plugin, _title: *const c_char) {}
+
+unsafe extern "C" fn gui_show(plugin: *const clap_plugin) -> bool {
+    let player = unsafe { &mut *player_of(plugin) };
+    let mut dialog = rfd::FileDialog::new().set_title("Choose a MusicOS project (.musicos)");
+    if let Some(first) = player.library.first().and_then(|p| p.parent()) {
+        dialog = dialog.set_directory(first);
+    }
+    let Some(path) = dialog.pick_folder() else {
+        return true; // canceled: nothing to do, still "shown"
+    };
+    if path.extension() != Some(std::ffi::OsStr::new("musicos")) {
+        eprintln!(
+            "MusicOS Player: {} is not a .musicos bundle",
+            path.display()
+        );
+        return true;
+    }
+    let index = player
+        .library
+        .iter()
+        .position(|p| *p == path)
+        .unwrap_or_else(|| {
+            player.library.push(path);
+            player.library.len() - 1
+        });
+    player.selected = u32::MAX; // force reload even if index matches
+    player.select(index as f64);
+    true
+}
+
+unsafe extern "C" fn gui_hide(_plugin: *const clap_plugin) -> bool {
+    true
+}
+
+static GUI_VTABLE: clap_plugin_gui = clap_plugin_gui {
+    is_api_supported: Some(gui_is_api_supported),
+    get_preferred_api: Some(gui_get_preferred_api),
+    create: Some(gui_create),
+    destroy: Some(gui_destroy),
+    set_scale: Some(gui_set_scale),
+    get_size: Some(gui_get_size),
+    can_resize: Some(gui_can_resize),
+    get_resize_hints: None,
+    adjust_size: None,
+    set_size: None,
+    set_parent: Some(gui_set_parent),
+    set_transient: Some(gui_set_transient),
+    suggest_title: Some(gui_suggest_title),
+    show: Some(gui_show),
+    hide: Some(gui_hide),
+};
 
 // --- factory + entry ----------------------------------------------------------
 

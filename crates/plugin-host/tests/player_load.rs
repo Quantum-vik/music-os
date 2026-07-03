@@ -82,6 +82,8 @@ fn player_lists_projects_as_a_param_and_plays_the_selection() {
     assert_eq!(plugins[0].id, "org.musicos.player");
 
     let mut instance = library.instantiate("org.musicos.player").unwrap();
+    // The picker GUI (native dialog) is advertised via the gui extension.
+    assert!(instance.has_extension(c"clap.gui"), "gui ext missing");
     instance.prepare(48_000, 512); // activate: scans library, loads async
 
     // The picker is a real CLAP parameter surfaced through the host.

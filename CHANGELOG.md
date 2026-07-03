@@ -7,7 +7,11 @@ semantic versioning. Project format compatibility is governed separately by
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- Player GUI v1: the plugin advertises the CLAP `gui` extension; opening
+  the plugin window in the DAW shows a native project-picker dialog —
+  chosen bundles join the library, get selected, and re-render in the
+  background. Host side gains `ClapInstance::has_extension`.
 
 ## [0.1.2] - 2026-07-03
 

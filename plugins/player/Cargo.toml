@@ -15,6 +15,7 @@ crate-type = ["cdylib"]
 clap-sys = { workspace = true }
 musicos-render = { workspace = true }
 musicos-storage = { workspace = true }
+rfd = { workspace = true }
 
 [lints]
 workspace = true
