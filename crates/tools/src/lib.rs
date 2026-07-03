@@ -9,10 +9,11 @@
 //! follow the `{ data..., summary }` convention (`docs/07` §3): programs act on
 //! the data, language models act on the summary.
 
+use musicos_arrangement::{Section, SectionPlan};
 use musicos_composition::{
     chords_to_pattern, generate_bass, generate_chords, generate_drums, generate_melody, DrumStyle,
 };
-use musicos_core_types::{Seed, Tempo, Tick, TrackId};
+use musicos_core_types::{ClipId, Seed, Tempo, Tick, TrackId};
 use musicos_harmony::{parse_note_name, parse_scale_kind, Chord, Scale};
 use musicos_music_core::Pattern;
 use musicos_project_model::{Command, TrackKind};
@@ -159,11 +160,27 @@ impl Tool for GetProjectSummary {
             })
             .collect();
         let bpm = s.tempo_map.tempo_at(Tick::ZERO).bpm();
+        let markers: Vec<Value> = s
+            .markers
+            .iter()
+            .map(|m| json!({ "name": m.name, "at": m.at.0 }))
+            .collect();
+        let clips: Vec<Value> = s
+            .tracks
+            .iter()
+            .flat_map(|t| {
+                t.placements
+                    .iter()
+                    .map(move |p| json!({ "clip_id": p.clip.0, "track_id": t.id.0, "at": p.at.0 }))
+            })
+            .collect();
         Ok(json!({
             "name": s.meta.name,
             "format_version": s.meta.format_version,
             "tempo_bpm": bpm,
             "tracks": tracks,
+            "markers": markers,
+            "placements": clips,
             "clip_count": s.clips.len(),
             "summary": format!(
                 "'{}': {} track(s), {} clip(s), {:.1} BPM",
@@ -402,6 +419,10 @@ fn summarize_command(cmd: &Command) -> String {
             format!("set track {} gain {gain_db:+.1} dB", track.0)
         }
         Command::SetTrackPan { track, pan } => format!("set track {} pan {pan:+.2}", track.0),
+        Command::PlaceClip { clip, at } => format!("place clip {} at {}", clip.0, at.0),
+        Command::UnplaceClip { clip, at } => format!("unplace clip {} from {}", clip.0, at.0),
+        Command::AddMarker { at, name } => format!("add marker '{name}' at {}", at.0),
+        Command::RemoveMarker { at, name } => format!("remove marker '{name}' at {}", at.0),
         Command::SetTrackMute { track, muted } => {
             format!(
                 "{} track {}",
@@ -807,6 +828,116 @@ impl Tool for GenerateDrums {
     }
 }
 
+// --- arrangement: sections and clip placement -----------------------------------
+
+/// One section in a structure plan.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SectionInput {
+    /// Section name, e.g. "intro", "verse", "chorus".
+    name: String,
+    /// Length in bars (4/4).
+    bars: usize,
+}
+
+/// Input for `add_section_markers`.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct AddSectionMarkersInput {
+    /// Sections in timeline order.
+    sections: Vec<SectionInput>,
+    /// Bar the first section starts at. Default 0.
+    #[serde(default)]
+    start_bar: Option<usize>,
+}
+
+struct AddSectionMarkers;
+
+impl Tool for AddSectionMarkers {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "add_section_markers",
+            description: "Define the song structure: add a named marker at the start \
+                          of each section and return each section's start bar and tick. \
+                          Use the returned ticks as the `at` for generators and \
+                          place_clip.",
+            params_schema: schema::<AddSectionMarkersInput>(),
+        }
+    }
+
+    fn call(&self, ctx: &mut ProjectCtx, input: Value) -> Result<Value, ToolError> {
+        let input: AddSectionMarkersInput = parse(input)?;
+        let plan = SectionPlan::new(
+            input
+                .sections
+                .into_iter()
+                .map(|s| Section {
+                    name: s.name,
+                    bars: s.bars,
+                })
+                .collect(),
+            input.start_bar.unwrap_or(0),
+        )
+        .map_err(ToolError::invalid)?;
+        let placed = plan.offsets();
+        let mut out = Vec::new();
+        for section in &placed {
+            ctx.commit(Command::AddMarker {
+                at: section.at,
+                name: section.section.name.clone(),
+            })?;
+            out.push(json!({
+                "name": section.section.name,
+                "start_bar": section.start_bar,
+                "bars": section.section.bars,
+                "at": section.at.0,
+            }));
+        }
+        let names: Vec<&str> = placed.iter().map(|s| s.section.name.as_str()).collect();
+        Ok(json!({
+            "sections": out,
+            "total_bars": plan.total_bars(),
+            "summary": format!(
+                "structure: {} ({} bars total)",
+                names.join(" -> "),
+                plan.total_bars()
+            ),
+        }))
+    }
+}
+
+/// Input for `place_clip`.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct PlaceClipInput {
+    /// Clip id (see `get_project_summary`).
+    clip_id: u64,
+    /// Timeline position in ticks (use section `at` values).
+    at: i64,
+}
+
+struct PlaceClip;
+
+impl Tool for PlaceClip {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "place_clip",
+            description: "Place an existing clip at another timeline position on its \
+                          track (repeat a verse's content in a later section without \
+                          duplicating data).",
+            params_schema: schema::<PlaceClipInput>(),
+        }
+    }
+
+    fn call(&self, ctx: &mut ProjectCtx, input: Value) -> Result<Value, ToolError> {
+        let input: PlaceClipInput = parse(input)?;
+        ctx.commit(Command::PlaceClip {
+            clip: ClipId(input.clip_id),
+            at: Tick(input.at),
+        })?;
+        Ok(json!({
+            "summary": format!("clip {} also placed at tick {}", input.clip_id, input.at),
+        }))
+    }
+}
+
 /// The canonical tool registry.
 pub struct Registry {
     tools: Vec<Box<dyn Tool>>,
@@ -828,6 +959,8 @@ impl Registry {
                 Box::new(GenerateMelody),
                 Box::new(GenerateBass),
                 Box::new(GenerateDrums),
+                Box::new(AddSectionMarkers),
+                Box::new(PlaceClip),
                 Box::new(Undo),
             ],
         }

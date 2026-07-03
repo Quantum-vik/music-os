@@ -88,6 +88,15 @@ pub struct Track {
     pub placements: Vec<Placement>,
 }
 
+/// A named timeline position (section boundaries, cues).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Marker {
+    /// Timeline position.
+    pub at: Tick,
+    /// Display name (e.g. "verse", "chorus").
+    pub name: String,
+}
+
 /// Clip content (symbolic only in this milestone).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Clip {
@@ -111,6 +120,10 @@ pub struct ProjectState {
     /// Clip contents, referenced by placements (invariant ID1: no dangling
     /// references can be constructed through commands).
     pub clips: BTreeMap<ClipId, Clip>,
+    /// Named timeline positions, sorted by tick. `#[serde(default)]` keeps
+    /// older bundles readable (docs/08 §5).
+    #[serde(default)]
+    pub markers: Vec<Marker>,
     next_track: u64,
     next_clip: u64,
 }
@@ -128,6 +141,7 @@ impl ProjectState {
             signature_map: SignatureMap::default(),
             tracks: Vec::new(),
             clips: BTreeMap::new(),
+            markers: Vec::new(),
             next_track: 0,
             next_clip: 0,
         }
@@ -243,6 +257,47 @@ impl ProjectState {
                     to: at,
                 }])
             }
+            Command::PlaceClip { clip, at } => {
+                if at < Tick::ZERO {
+                    return Err(DomainError::NegativeTick(at));
+                }
+                let (track, _) = self.placement_of(clip)?;
+                Ok(vec![Event::ClipPlaced { track, clip, at }])
+            }
+            Command::UnplaceClip { clip, at } => {
+                let (track, _) = self.placement_of(clip)?;
+                let placements = self
+                    .track(track)?
+                    .placements
+                    .iter()
+                    .filter(|p| p.clip == clip)
+                    .count();
+                if placements <= 1 {
+                    return Err(DomainError::LastPlacement(clip));
+                }
+                let exists = self
+                    .track(track)?
+                    .placements
+                    .iter()
+                    .any(|p| p.clip == clip && p.at == at);
+                if !exists {
+                    return Err(DomainError::NoSuchPlacement(clip, at));
+                }
+                Ok(vec![Event::ClipUnplaced { track, clip, at }])
+            }
+            Command::AddMarker { at, name } => {
+                let name = non_empty(&name)?;
+                if at < Tick::ZERO {
+                    return Err(DomainError::NegativeTick(at));
+                }
+                Ok(vec![Event::MarkerAdded { at, name }])
+            }
+            Command::RemoveMarker { at, name } => {
+                if !self.markers.iter().any(|m| m.at == at && m.name == name) {
+                    return Err(DomainError::NoSuchMarker(at, name));
+                }
+                Ok(vec![Event::MarkerRemoved { at, name }])
+            }
             Command::SetTrackGain { track, gain_db } => {
                 if !(-96.0..=12.0).contains(&gain_db) {
                     return Err(DomainError::OutOfRange("gain_db", -96.0, 12.0));
@@ -346,6 +401,39 @@ impl ProjectState {
                     .find(|p| p.clip == *clip)
                     .ok_or(DomainError::UnknownClip(*clip))?;
                 p.at = *to;
+            }
+            Event::ClipPlaced { track, clip, at } => {
+                self.track_mut(*track)?.placements.push(Placement {
+                    clip: *clip,
+                    at: *at,
+                });
+            }
+            Event::ClipUnplaced { track, clip, at } => {
+                let t = self.track_mut(*track)?;
+                if let Some(pos) = t
+                    .placements
+                    .iter()
+                    .rposition(|p| p.clip == *clip && p.at == *at)
+                {
+                    t.placements.remove(pos);
+                }
+            }
+            Event::MarkerAdded { at, name } => {
+                self.markers.push(Marker {
+                    at: *at,
+                    name: name.clone(),
+                });
+                self.markers
+                    .sort_by(|a, b| a.at.cmp(&b.at).then(a.name.cmp(&b.name)));
+            }
+            Event::MarkerRemoved { at, name } => {
+                if let Some(pos) = self
+                    .markers
+                    .iter()
+                    .position(|m| m.at == *at && m.name == *name)
+                {
+                    self.markers.remove(pos);
+                }
             }
             Event::TrackGainSet { track, to, .. } => {
                 self.track_mut(*track)?.mix.gain_db = *to;
@@ -459,6 +547,35 @@ pub enum Command {
         /// New timeline position.
         at: Tick,
     },
+    /// Place an existing clip at an additional timeline position on its
+    /// own track (structural sharing — cheap section repetition).
+    PlaceClip {
+        /// Clip to place again.
+        clip: ClipId,
+        /// New timeline position.
+        at: Tick,
+    },
+    /// Remove one placement of a clip (not the last one — use `RemoveClip`).
+    UnplaceClip {
+        /// Target clip.
+        clip: ClipId,
+        /// The placement position to remove.
+        at: Tick,
+    },
+    /// Add a named marker to the timeline.
+    AddMarker {
+        /// Timeline position.
+        at: Tick,
+        /// Marker name.
+        name: String,
+    },
+    /// Remove the marker with this exact position and name.
+    RemoveMarker {
+        /// Timeline position.
+        at: Tick,
+        /// Marker name.
+        name: String,
+    },
     /// Set a track's gain in decibels (−96.0..=12.0).
     SetTrackGain {
         /// Target track.
@@ -559,6 +676,38 @@ pub enum Event {
         /// New position.
         to: Tick,
     },
+    /// A clip gained an additional placement.
+    ClipPlaced {
+        /// Host track.
+        track: TrackId,
+        /// Target clip.
+        clip: ClipId,
+        /// New placement position.
+        at: Tick,
+    },
+    /// One placement of a clip was removed (content untouched).
+    ClipUnplaced {
+        /// Host track.
+        track: TrackId,
+        /// Target clip.
+        clip: ClipId,
+        /// Removed placement position.
+        at: Tick,
+    },
+    /// A marker was added.
+    MarkerAdded {
+        /// Timeline position.
+        at: Tick,
+        /// Marker name.
+        name: String,
+    },
+    /// A marker was removed.
+    MarkerRemoved {
+        /// Timeline position.
+        at: Tick,
+        /// Marker name.
+        name: String,
+    },
     /// A track's gain changed.
     TrackGainSet {
         /// Target track.
@@ -606,6 +755,7 @@ pub enum Event {
 
 impl Event {
     /// The event that exactly undoes this one.
+    #[allow(clippy::too_many_lines)] // one arm per event; grows with the event set
     pub fn inverse(&self) -> Event {
         match self {
             Event::ProjectRenamed { from, to } => Event::ProjectRenamed {
@@ -662,6 +812,24 @@ impl Event {
                 clip: *clip,
                 from: *to,
                 to: *from,
+            },
+            Event::ClipPlaced { track, clip, at } => Event::ClipUnplaced {
+                track: *track,
+                clip: *clip,
+                at: *at,
+            },
+            Event::ClipUnplaced { track, clip, at } => Event::ClipPlaced {
+                track: *track,
+                clip: *clip,
+                at: *at,
+            },
+            Event::MarkerAdded { at, name } => Event::MarkerRemoved {
+                at: *at,
+                name: name.clone(),
+            },
+            Event::MarkerRemoved { at, name } => Event::MarkerAdded {
+                at: *at,
+                name: name.clone(),
             },
             Event::TrackGainSet { track, from, to } => Event::TrackGainSet {
                 track: *track,
@@ -755,6 +923,15 @@ pub enum DomainError {
     /// Bus tracks hold no clips.
     #[error("bus track {0:?} cannot hold clips")]
     BusHoldsNoClips(TrackId),
+    /// A clip's final placement cannot be unplaced (use `RemoveClip`).
+    #[error("clip {0:?} has only one placement — use remove_clip instead")]
+    LastPlacement(ClipId),
+    /// No placement of the clip exists at that position.
+    #[error("clip {0:?} has no placement at {1:?}")]
+    NoSuchPlacement(ClipId, Tick),
+    /// No marker with that position and name.
+    #[error("no marker '{1}' at {0:?}")]
+    NoSuchMarker(Tick, String),
     /// A numeric parameter was outside its valid range.
     #[error("{0} must be within {1}..={2}")]
     OutOfRange(&'static str, f32, f32),

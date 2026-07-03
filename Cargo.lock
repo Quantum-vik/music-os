@@ -498,6 +498,10 @@ dependencies = [
 [[package]]
 name = "musicos-arrangement"
 version = "0.0.1"
+dependencies = [
+ "musicos-core-types",
+ "thiserror",
+]
 
 [[package]]
 name = "musicos-audio-engine"
@@ -695,6 +699,7 @@ dependencies = [
 name = "musicos-tools"
 version = "0.0.1"
 dependencies = [
+ "musicos-arrangement",
  "musicos-composition",
  "musicos-core-types",
  "musicos-harmony",

@@ -35,6 +35,7 @@ musicos-core-types = { path = "crates/core-types" }
 musicos-music-core = { path = "crates/music-core" }
 musicos-harmony = { path = "crates/harmony" }
 musicos-composition = { path = "crates/composition" }
+musicos-arrangement = { path = "crates/arrangement" }
 musicos-timeline = { path = "crates/timeline" }
 musicos-midi = { path = "crates/midi" }
 musicos-project-model = { path = "crates/project-model" }
