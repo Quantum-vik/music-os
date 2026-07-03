@@ -7,6 +7,10 @@ semantic versioning. Project format compatibility is governed separately by
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.3] - 2026-07-03
+
 ### Added
 - Ableton Link tempo sync: new `music-link` binary (GPL-2.0, isolated in
   `apps/link` so the workspace stays Apache/MIT) joins the local Link
