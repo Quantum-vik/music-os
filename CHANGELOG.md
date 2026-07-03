@@ -26,7 +26,11 @@ semantic versioning. Project format compatibility is governed separately by
 - AI production agent over the tool registry: Claude subscription
   (Claude Code CLI) or Anthropic API, user-selectable (`music ai`).
 - MCP stdio server (`music-server`) exposing every tool; Python SDK
-  (`sdk/python`) speaking the same protocol; Tauri desktop app.
+  (`sdk/python`) speaking the same protocol.
+- Desktop application (Tauri): control-surface UI (tracks/mix, generators,
+  transport with live progress, render with mastering target, AI producer
+  panel, raw tool console), start/stop playback sessions, installable
+  bundles (.app/.dmg, .msi, .deb/.AppImage) published on release tags.
 - Engineering: 3-OS CI (fmt, clippy -D warnings, nextest, doctests, layer
   check, rustdoc, audit/deny), criterion benchmarks with budget gates,
   fuzz-lite parser robustness tests, release workflow with checksums,

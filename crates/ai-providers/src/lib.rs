@@ -122,6 +122,52 @@ impl SubscriptionRunner {
             Err(ProviderError::ClaudeExit(status.code().unwrap_or(-1)))
         }
     }
+
+    /// Like [`SubscriptionRunner::run`] but captures the transcript instead
+    /// of inheriting the terminal (for GUI clients).
+    ///
+    /// # Errors
+    /// Fails if the `claude` CLI is missing or exits non-zero (stderr is
+    /// included in the error).
+    pub fn run_captured(&self, brief: &str) -> Result<String, ProviderError> {
+        let mcp_config = json!({
+            "mcpServers": {
+                "musicos": {
+                    "command": self.server_bin.display().to_string(),
+                    "args": ["--project", self.project.display().to_string()],
+                }
+            }
+        });
+        let config_path =
+            std::env::temp_dir().join(format!("musicos-mcp-gui-{}.json", std::process::id()));
+        std::fs::write(&config_path, mcp_config.to_string())
+            .map_err(|e| ProviderError::Io(e.to_string()))?;
+        let output = Command::new("claude")
+            .arg("-p")
+            .arg(brief)
+            .arg("--mcp-config")
+            .arg(&config_path)
+            .arg("--strict-mcp-config")
+            .arg("--allowedTools")
+            .arg("mcp__musicos__*")
+            .arg("--append-system-prompt")
+            .arg(
+                "Use the musicos MCP tools to fulfil the request. Start with \
+                 get_project_summary; prefer the fewest tool calls; render only when asked.",
+            )
+            .output()
+            .map_err(|e| ProviderError::Io(format!("failed to spawn claude: {e}")))?;
+        let _ = std::fs::remove_file(&config_path);
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            Err(ProviderError::Io(format!(
+                "claude exited with {}: {}",
+                output.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&output.stderr)
+            )))
+        }
+    }
 }
 
 /// Anthropic Messages API backend for the in-process agent loop.

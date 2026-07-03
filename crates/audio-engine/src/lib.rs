@@ -108,18 +108,133 @@ pub fn play_from(
     start_bar: u64,
     mut on_progress: impl FnMut(Progress),
 ) -> Result<(), PlaybackError> {
+    let mut session = start(state, start_bar)?;
+    loop {
+        on_progress(session.progress());
+        if session.is_finished() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    on_progress(session.progress());
+    session.stop_and_wait();
+    Ok(())
+}
+
+/// A running playback session, controllable from any thread.
+///
+/// The CPAL stream lives on a dedicated control thread (streams are not
+/// `Send` on every platform); this handle only touches atomics.
+pub struct PlaybackSession {
+    stop: Arc<AtomicBool>,
+    position: Arc<AtomicU64>,
+    total: u64,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl PlaybackSession {
+    /// Current progress as `(frames_played, total_frames)`.
+    pub fn progress(&self) -> Progress {
+        (
+            self.position.load(Ordering::Relaxed).min(self.total),
+            self.total,
+        )
+    }
+
+    /// True once playback has ended (finished or stopped).
+    pub fn is_finished(&self) -> bool {
+        self.thread
+            .as_ref()
+            .map_or(true, std::thread::JoinHandle::is_finished)
+    }
+
+    /// Requests a stop; playback tears down within one control tick.
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+
+    /// Stops and blocks until the control thread has torn down the stream.
+    pub fn stop_and_wait(&mut self) {
+        self.stop();
+        if let Some(handle) = self.thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for PlaybackSession {
+    fn drop(&mut self) {
+        self.stop_and_wait();
+    }
+}
+
+/// Starts playback of a project at a bar (4/4) and returns the session
+/// handle. Setup (device, compile, stream start) happens before this
+/// returns; the audio then runs on background threads.
+///
+/// # Errors
+/// Same as [`play`].
+pub fn start(state: &ProjectState, start_bar: u64) -> Result<PlaybackSession, PlaybackError> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let position = Arc::new(AtomicU64::new(0));
+    let state = state.clone();
+    let (setup_tx, setup_rx) = std::sync::mpsc::channel::<Result<u64, PlaybackError>>();
+    let thread_stop = Arc::clone(&stop);
+    let thread_position = Arc::clone(&position);
+
+    let thread = std::thread::spawn(move || {
+        run_session(&state, start_bar, &thread_stop, &thread_position, &setup_tx);
+    });
+
+    match setup_rx.recv() {
+        Ok(Ok(total)) => Ok(PlaybackSession {
+            stop,
+            position,
+            total,
+            thread: Some(thread),
+        }),
+        Ok(Err(e)) => {
+            let _ = thread.join();
+            Err(e)
+        }
+        Err(_) => {
+            let _ = thread.join();
+            Err(PlaybackError::Device(
+                "playback thread died during setup".into(),
+            ))
+        }
+    }
+}
+
+/// The session control thread: owns the stream, reports setup over `setup`,
+/// then runs until completion or an external stop.
+#[allow(clippy::too_many_lines)] // one linear setup + control sequence
+fn run_session(
+    state: &ProjectState,
+    start_bar: u64,
+    stop: &Arc<AtomicBool>,
+    position: &Arc<AtomicU64>,
+    setup: &std::sync::mpsc::Sender<Result<u64, PlaybackError>>,
+) {
+    let fail = |e: PlaybackError, setup: &std::sync::mpsc::Sender<Result<u64, PlaybackError>>| {
+        let _ = setup.send(Err(e));
+    };
     let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or(PlaybackError::NoDevice)?;
-    let config = device
-        .default_output_config()
-        .map_err(|e| PlaybackError::Device(e.to_string()))?;
+    let Some(device) = host.default_output_device() else {
+        return fail(PlaybackError::NoDevice, setup);
+    };
+    let config = match device.default_output_config() {
+        Ok(c) => c,
+        Err(e) => return fail(PlaybackError::Device(e.to_string()), setup),
+    };
     if config.sample_format() != cpal::SampleFormat::F32 {
-        return Err(PlaybackError::Device(format!(
-            "unsupported sample format {:?} (only f32 outputs supported in v0)",
-            config.sample_format()
-        )));
+        return fail(
+            PlaybackError::Device(format!(
+                "unsupported sample format {:?} (only f32 outputs supported in v0)",
+                config.sample_format()
+            )),
+            setup,
+        );
     }
     let sample_rate = config.sample_rate().0;
     let channels = usize::from(config.channels());
@@ -129,8 +244,10 @@ pub fn play_from(
         sample_rate,
         ..RenderOptions::default()
     };
-    let (graph, total_frames) = compile_project_streaming(state, &opts)
-        .map_err(|e| PlaybackError::Compile(e.to_string()))?;
+    let (graph, total_frames) = match compile_project_streaming(state, &opts) {
+        Ok(g) => g,
+        Err(e) => return fail(PlaybackError::Compile(e.to_string()), setup),
+    };
     let start_tick = musicos_core_types::Tick(
         i64::try_from(start_bar).unwrap_or(0) * musicos_core_types::PPQ * 4,
     );
@@ -149,10 +266,9 @@ pub fn play_from(
     let ring = rtrb::RingBuffer::<f32>::new(RING_FRAMES * 2);
     let (producer, mut consumer) = ring;
     let played = Arc::new(AtomicU64::new(0));
-    let stop = Arc::new(AtomicBool::new(false));
 
     // Feeder thread: run the streaming graph ahead of the callback.
-    let feeder_stop = Arc::clone(&stop);
+    let feeder_stop = Arc::clone(stop);
     let swap = SwapSlot::new();
     let feeder_swap = swap.clone();
     let feeder = std::thread::spawn(move || {
@@ -168,52 +284,62 @@ pub fn play_from(
 
     // Device callback: pop only. Underruns emit silence.
     let cb_played = Arc::clone(&played);
-    let stream = device
-        .build_output_stream(
-            &config.into(),
-            move |data: &mut [f32], _| {
-                let mut frames = 0u64;
-                for frame in data.chunks_mut(channels) {
-                    let l = consumer.pop().unwrap_or(0.0);
-                    let r = consumer.pop().unwrap_or(l);
-                    if channels == 1 {
-                        frame[0] = (l + r) * 0.5;
-                    } else {
-                        frame[0] = l;
-                        frame[1] = r;
-                        for extra in frame.iter_mut().skip(2) {
-                            *extra = 0.0;
-                        }
+    let stream = match device.build_output_stream(
+        &config.into(),
+        move |data: &mut [f32], _| {
+            let mut frames = 0u64;
+            for frame in data.chunks_mut(channels) {
+                let l = consumer.pop().unwrap_or(0.0);
+                let r = consumer.pop().unwrap_or(l);
+                if channels == 1 {
+                    frame[0] = (l + r) * 0.5;
+                } else {
+                    frame[0] = l;
+                    frame[1] = r;
+                    for extra in frame.iter_mut().skip(2) {
+                        *extra = 0.0;
                     }
-                    frames += 1;
                 }
-                cb_played.fetch_add(frames, Ordering::Relaxed);
-            },
-            move |err| eprintln!("audio stream error: {err}"),
-            None,
-        )
-        .map_err(|e| PlaybackError::Device(e.to_string()))?;
-    stream
-        .play()
-        .map_err(|e| PlaybackError::Device(e.to_string()))?;
+                frames += 1;
+            }
+            cb_played.fetch_add(frames, Ordering::Relaxed);
+        },
+        move |err| eprintln!("audio stream error: {err}"),
+        None,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            stop.store(true, Ordering::Relaxed);
+            let _ = feeder.join();
+            return fail(PlaybackError::Device(e.to_string()), setup);
+        }
+    };
+    if let Err(e) = stream.play() {
+        stop.store(true, Ordering::Relaxed);
+        let _ = feeder.join();
+        return fail(PlaybackError::Device(e.to_string()), setup);
+    }
+    let _ = setup.send(Ok(total));
 
-    // Control loop: report progress until everything audible has played.
-    let remaining = total - start_frame as u64;
+    // Control loop: track position until everything audible has played or
+    // an external stop arrives.
     loop {
         let done = (start_frame as u64 + played.load(Ordering::Relaxed)).min(total);
-        let _ = remaining;
-        on_progress((done, total));
-        if done >= total {
+        position.store(done, Ordering::Relaxed);
+        if done >= total || stop.load(Ordering::Relaxed) {
             break;
         }
-        std::thread::sleep(Duration::from_millis(250));
+        std::thread::sleep(Duration::from_millis(100));
     }
     // Small grace period for the device's own buffer, then tear down.
     std::thread::sleep(Duration::from_millis(150));
     stop.store(true, Ordering::Relaxed);
     drop(stream);
     let _ = feeder.join();
-    Ok(())
+    position.store(
+        total.min(start_frame as u64 + played.load(Ordering::Relaxed)),
+        Ordering::Relaxed,
+    );
 }
 
 /// Errors from playback.

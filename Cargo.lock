@@ -2313,6 +2313,8 @@ dependencies = [
 name = "musicos-desktop"
 version = "0.0.1"
 dependencies = [
+ "musicos-ai-providers",
+ "musicos-audio-engine",
  "musicos-core-types",
  "musicos-project-model",
  "musicos-storage",

@@ -156,6 +156,7 @@ impl Tool for GetProjectSummary {
                 json!({
                     "id": t.id.0, "name": t.name, "kind": format!("{:?}", t.kind),
                     "clips": t.placements.len(),
+                    "gain_db": t.mix.gain_db, "pan": t.mix.pan, "muted": t.mix.muted,
                     "inserts": t.inserts.iter().map(device_name).collect::<Vec<_>>(),
                 })
             })

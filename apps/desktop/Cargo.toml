@@ -20,6 +20,8 @@ musicos-core-types = { workspace = true }
 musicos-project-model = { workspace = true }
 musicos-storage = { workspace = true }
 musicos-tools = { workspace = true }
+musicos-audio-engine = { workspace = true }
+musicos-ai-providers = { workspace = true }
 serde_json = { workspace = true }
 tauri = { version = "2", features = [] }
 
