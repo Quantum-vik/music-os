@@ -1,0 +1,12 @@
+[book]
+title = "MusicOS"
+description = "An operating system for autonomous music production"
+authors = ["The MusicOS Contributors"]
+src = "docs"
+
+[build]
+build-dir = "target/book"
+
+[output.html]
+default-theme = "ayu"
+git-repository-url = "https://github.com/Quantum-vik/music-os"

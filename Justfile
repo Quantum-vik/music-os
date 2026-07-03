@@ -37,6 +37,9 @@ audit:
     cargo audit
     cargo deny check
 
+book:
+    mdbook build
+
 docs:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 

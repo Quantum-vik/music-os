@@ -47,6 +47,11 @@ jobs:
       - run: cargo nextest run --workspace
       # nextest does not run doctests; keep them honest here
       - run: cargo test --workspace --doc
+      - name: Python SDK smoke
+        if: runner.os != 'Windows'
+        run: python3 sdk/python/tests/test_client.py
+        env:
+          MUSICOS_SERVER: target/debug/music-server
 
   audit:
     name: Dependency audit
