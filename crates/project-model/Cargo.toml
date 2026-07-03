@@ -12,6 +12,7 @@ publish.workspace = true
 musicos-core-types = { workspace = true }
 musicos-music-core = { workspace = true }
 musicos-timeline = { workspace = true }
+schemars = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 

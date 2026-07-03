@@ -15,9 +15,11 @@ use std::path::Path;
 
 use musicos_audio_graph::{CompiledGraph, Graph, Node, StereoBlock};
 use musicos_core_types::Tick;
-use musicos_dsp::{db_to_gain, pan_gains, StereoBuffer};
+use musicos_dsp::{
+    db_to_gain, pan_gains, BiquadMode, BiquadStereo, Compressor, Reverb, StereoBuffer, StereoDelay,
+};
 use musicos_instruments::SimpleSynth;
-use musicos_project_model::{ChannelStrip, ProjectState, TrackKind};
+use musicos_project_model::{ChannelStrip, Device, EqMode, ProjectState, TrackKind};
 
 /// Render parameters.
 #[derive(Debug, Clone, Copy)]
@@ -51,6 +53,75 @@ impl Node for TrackSource {
             let s = self.mono.get(frame_offset + i).copied().unwrap_or(0.0);
             *l = s;
             *r = s;
+        }
+    }
+}
+
+/// An insert-effect node wrapping a DSP processor.
+enum InsertNode {
+    Passthrough,
+    Eq(BiquadStereo),
+    Compressor(Compressor),
+    Delay(StereoDelay),
+    Reverb(Reverb),
+}
+
+impl InsertNode {
+    fn build(device: Device, sample_rate: u32) -> InsertNode {
+        match device {
+            Device::Eq {
+                mode,
+                freq_hz,
+                q,
+                gain_db,
+            } => {
+                let mode = match mode {
+                    EqMode::LowPass => BiquadMode::LowPass,
+                    EqMode::HighPass => BiquadMode::HighPass,
+                    // Peak, and any future mode: neutral at gain 0 (docs/08 §5).
+                    _ => BiquadMode::Peak,
+                };
+                InsertNode::Eq(BiquadStereo::new(mode, sample_rate, freq_hz, q, gain_db))
+            }
+            Device::Compressor {
+                threshold_db,
+                ratio,
+                attack_ms,
+                release_ms,
+                makeup_db,
+            } => InsertNode::Compressor(Compressor::new(
+                sample_rate,
+                threshold_db,
+                ratio,
+                attack_ms,
+                release_ms,
+                makeup_db,
+            )),
+            Device::Delay {
+                time_ms,
+                feedback,
+                mix,
+            } => InsertNode::Delay(StereoDelay::new(sample_rate, time_ms, feedback, mix)),
+            Device::Reverb { room, damping, mix } => {
+                InsertNode::Reverb(Reverb::new(sample_rate, room, damping, mix))
+            }
+            // Unknown device kinds from newer bundles: passthrough, never
+            // refuse to render (forward tolerance, docs/08 §5).
+            _ => InsertNode::Passthrough,
+        }
+    }
+}
+
+impl Node for InsertNode {
+    fn process(&mut self, _: usize, inputs: &[&StereoBlock], out: &mut StereoBlock) {
+        out.left.copy_from_slice(&inputs[0].left);
+        out.right.copy_from_slice(&inputs[0].right);
+        match self {
+            InsertNode::Passthrough => {}
+            InsertNode::Eq(p) => p.process(&mut out.left, &mut out.right),
+            InsertNode::Compressor(p) => p.process(&mut out.left, &mut out.right),
+            InsertNode::Delay(p) => p.process(&mut out.left, &mut out.right),
+            InsertNode::Reverb(p) => p.process(&mut out.left, &mut out.right),
         }
     }
 }
@@ -120,7 +191,7 @@ pub fn compile_project(
     let sr = opts.sample_rate;
 
     // Pre-render each MIDI track to mono and find the total length.
-    let mut track_audio: Vec<(ChannelStrip, Vec<f32>)> = Vec::new();
+    let mut track_audio: Vec<(ChannelStrip, Vec<Device>, Vec<f32>)> = Vec::new();
     let mut last_end = 0usize;
     for track in state.tracks.iter().filter(|t| t.kind == TrackKind::Midi) {
         let mut end_of_track = 0usize;
@@ -155,7 +226,7 @@ pub fn compile_project(
             }
         }
         last_end = last_end.max(end_of_track);
-        track_audio.push((track.mix, mono));
+        track_audio.push((track.mix, track.inserts.clone(), mono));
     }
     if track_audio.is_empty() {
         return Err(RenderError::EmptyProject);
@@ -166,11 +237,18 @@ pub fn compile_project(
 
     let mut graph = Graph::new();
     let master = graph.add(Box::new(MasterSum));
-    for (strip, mono) in track_audio {
+    for (strip, inserts, mono) in track_audio {
         let source = graph.add(Box::new(TrackSource { mono }));
+        // Chain: source -> inserts (in order) -> strip -> master.
+        let mut upstream = source;
+        for device in inserts {
+            let node = graph.add(Box::new(InsertNode::build(device, sr)));
+            graph.connect(upstream, node).map_err(RenderError::Graph)?;
+            upstream = node;
+        }
         let strip_node = graph.add(Box::new(StripNode::new(strip)));
         graph
-            .connect(source, strip_node)
+            .connect(upstream, strip_node)
             .map_err(RenderError::Graph)?;
         graph
             .connect(strip_node, master)
@@ -354,6 +432,41 @@ mod tests {
             "hard-left pan must silence the right channel"
         );
         assert!(left_peak > 0.05);
+    }
+
+    #[test]
+    fn a_delay_insert_audibly_extends_the_tail() {
+        let mut state = demo_project();
+        let opts = RenderOptions {
+            tail_seconds: 2.0,
+            ..RenderOptions::default()
+        };
+        let dry = render_project(&state, &opts).unwrap();
+        state
+            .dispatch(Command::AddDevice {
+                track: TrackId(0),
+                device: musicos_project_model::Device::Delay {
+                    time_ms: 500.0,
+                    feedback: 0.5,
+                    mix: 0.5,
+                },
+            })
+            .unwrap();
+        let wet = render_project(&state, &opts).unwrap();
+        // Measure energy in the final second (pure tail region).
+        let window = 48_000usize;
+        let tail_energy = |b: &musicos_dsp::StereoBuffer| {
+            b.left[b.frames() - window..]
+                .iter()
+                .map(|s| s * s)
+                .sum::<f32>()
+        };
+        assert!(
+            tail_energy(&wet) > tail_energy(&dry) * 4.0 + 1e-6,
+            "delay feedback must ring into the tail"
+        );
+        // Determinism holds with DSP in the chain.
+        assert_eq!(wet, render_project(&state, &opts).unwrap());
     }
 
     #[test]

@@ -72,6 +72,114 @@ impl Default for ChannelStrip {
     }
 }
 
+/// An insert effect on a track's channel strip. Parameters are plain values
+/// (docs/09 §4); the render layer maps them onto DSP processors.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Device {
+    /// Biquad EQ (RBJ).
+    Eq {
+        /// Filter mode.
+        mode: EqMode,
+        /// Center/corner frequency in Hz (10..=20000).
+        freq_hz: f32,
+        /// Resonance/quality (0.1..=18).
+        q: f32,
+        /// Gain in dB for peak mode (−24..=24); ignored by low/high pass.
+        gain_db: f32,
+    },
+    /// Peak compressor.
+    Compressor {
+        /// Threshold in dBFS (−60..=0).
+        threshold_db: f32,
+        /// Ratio (1..=20).
+        ratio: f32,
+        /// Attack in ms (0.1..=200).
+        attack_ms: f32,
+        /// Release in ms (1..=2000).
+        release_ms: f32,
+        /// Makeup gain in dB (0..=24).
+        makeup_db: f32,
+    },
+    /// Feedback delay.
+    Delay {
+        /// Delay time in ms (1..=2000).
+        time_ms: f32,
+        /// Feedback amount (0..=0.95).
+        feedback: f32,
+        /// Wet mix (0..=1).
+        mix: f32,
+    },
+    /// Schroeder reverb.
+    Reverb {
+        /// Room size (0..=1).
+        room: f32,
+        /// High-frequency damping (0..=1).
+        damping: f32,
+        /// Wet mix (0..=1).
+        mix: f32,
+    },
+}
+
+/// EQ filter modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum EqMode {
+    /// 12 dB/oct low-pass.
+    LowPass,
+    /// 12 dB/oct high-pass.
+    HighPass,
+    /// Peaking band.
+    Peak,
+}
+
+fn validate_device(device: &Device) -> Result<(), DomainError> {
+    let ok = match device {
+        Device::Eq {
+            freq_hz,
+            q,
+            gain_db,
+            ..
+        } => {
+            (10.0..=20_000.0).contains(freq_hz)
+                && (0.1..=18.0).contains(q)
+                && (-24.0..=24.0).contains(gain_db)
+        }
+        Device::Compressor {
+            threshold_db,
+            ratio,
+            attack_ms,
+            release_ms,
+            makeup_db,
+        } => {
+            (-60.0..=0.0).contains(threshold_db)
+                && (1.0..=20.0).contains(ratio)
+                && (0.1..=200.0).contains(attack_ms)
+                && (1.0..=2000.0).contains(release_ms)
+                && (0.0..=24.0).contains(makeup_db)
+        }
+        Device::Delay {
+            time_ms,
+            feedback,
+            mix,
+        } => {
+            (1.0..=2000.0).contains(time_ms)
+                && (0.0..=0.95).contains(feedback)
+                && (0.0..=1.0).contains(mix)
+        }
+        Device::Reverb { room, damping, mix } => {
+            (0.0..=1.0).contains(room) && (0.0..=1.0).contains(damping) && (0.0..=1.0).contains(mix)
+        }
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(DomainError::DeviceParams)
+    }
+}
+
 /// A track: name, kind, mix settings, and clip placements.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Track {
@@ -84,6 +192,9 @@ pub struct Track {
     /// Mix settings.
     #[serde(default)]
     pub mix: ChannelStrip,
+    /// Insert effects, processed in order before gain/pan.
+    #[serde(default)]
+    pub inserts: Vec<Device>,
     /// Clips placed on this track, in insertion order.
     pub placements: Vec<Placement>,
 }
@@ -185,6 +296,7 @@ impl ProjectState {
                         name,
                         kind,
                         mix: ChannelStrip::default(),
+                        inserts: Vec::new(),
                         placements: Vec::new(),
                     },
                     index: self.tracks.len(),
@@ -328,6 +440,27 @@ impl ProjectState {
                     to: muted,
                 }])
             }
+            Command::AddDevice { track, device } => {
+                validate_device(&device)?;
+                let index = self.track(track)?.inserts.len();
+                Ok(vec![Event::DeviceAdded {
+                    track,
+                    index,
+                    device,
+                }])
+            }
+            Command::RemoveDevice { track, index } => {
+                let t = self.track(track)?;
+                let device = *t
+                    .inserts
+                    .get(index)
+                    .ok_or(DomainError::NoSuchDevice(track, index))?;
+                Ok(vec![Event::DeviceRemoved {
+                    track,
+                    index,
+                    device,
+                }])
+            }
             Command::SetTempo { at, tempo } => {
                 if at < Tick::ZERO {
                     return Err(DomainError::NegativeTick(at));
@@ -353,6 +486,7 @@ impl ProjectState {
     ///
     /// # Errors
     /// Returns [`DomainError`] if the event references unknown entities.
+    #[allow(clippy::too_many_lines)] // one arm per event; grows with the event set
     pub fn apply_event(&mut self, event: &Event) -> Result<(), DomainError> {
         match event {
             Event::ProjectRenamed { to, .. } => {
@@ -443,6 +577,21 @@ impl ProjectState {
             }
             Event::TrackMuteSet { track, to, .. } => {
                 self.track_mut(*track)?.mix.muted = *to;
+            }
+            Event::DeviceAdded {
+                track,
+                index,
+                device,
+            } => {
+                let t = self.track_mut(*track)?;
+                let index = (*index).min(t.inserts.len());
+                t.inserts.insert(index, *device);
+            }
+            Event::DeviceRemoved { track, index, .. } => {
+                let t = self.track_mut(*track)?;
+                if *index < t.inserts.len() {
+                    t.inserts.remove(*index);
+                }
             }
             Event::TempoSet { at, to, .. } => {
                 self.tempo_map
@@ -597,6 +746,20 @@ pub enum Command {
         /// New mute state.
         muted: bool,
     },
+    /// Append an insert device to a track's chain.
+    AddDevice {
+        /// Target track.
+        track: TrackId,
+        /// The device and its parameters.
+        device: Device,
+    },
+    /// Remove the insert device at an index in a track's chain.
+    RemoveDevice {
+        /// Target track.
+        track: TrackId,
+        /// Zero-based position in the chain.
+        index: usize,
+    },
     /// Set (or add) a tempo change at a position.
     SetTempo {
         /// Timeline position of the tempo change.
@@ -735,6 +898,24 @@ pub enum Event {
         /// New state.
         to: bool,
     },
+    /// A device was added to a track's insert chain.
+    DeviceAdded {
+        /// Target track.
+        track: TrackId,
+        /// Position in the chain.
+        index: usize,
+        /// The device.
+        device: Device,
+    },
+    /// A device was removed from a track's insert chain.
+    DeviceRemoved {
+        /// Target track.
+        track: TrackId,
+        /// Its previous position.
+        index: usize,
+        /// The removed device (for undo).
+        device: Device,
+    },
     /// A tempo entry was set (added or changed).
     TempoSet {
         /// Timeline position.
@@ -830,6 +1011,24 @@ impl Event {
             Event::MarkerRemoved { at, name } => Event::MarkerAdded {
                 at: *at,
                 name: name.clone(),
+            },
+            Event::DeviceAdded {
+                track,
+                index,
+                device,
+            } => Event::DeviceRemoved {
+                track: *track,
+                index: *index,
+                device: *device,
+            },
+            Event::DeviceRemoved {
+                track,
+                index,
+                device,
+            } => Event::DeviceAdded {
+                track: *track,
+                index: *index,
+                device: *device,
             },
             Event::TrackGainSet { track, from, to } => Event::TrackGainSet {
                 track: *track,
@@ -932,6 +1131,12 @@ pub enum DomainError {
     /// No marker with that position and name.
     #[error("no marker '{1}' at {0:?}")]
     NoSuchMarker(Tick, String),
+    /// A device parameter was outside its valid range.
+    #[error("device parameters out of range")]
+    DeviceParams,
+    /// No device at that index on the track.
+    #[error("track {0:?} has no device at index {1}")]
+    NoSuchDevice(TrackId, usize),
     /// A numeric parameter was outside its valid range.
     #[error("{0} must be within {1}..={2}")]
     OutOfRange(&'static str, f32, f32),

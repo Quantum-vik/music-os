@@ -623,6 +623,7 @@ dependencies = [
  "musicos-core-types",
  "musicos-music-core",
  "musicos-timeline",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror",

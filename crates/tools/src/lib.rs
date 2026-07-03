@@ -16,7 +16,7 @@ use musicos_composition::{
 use musicos_core_types::{ClipId, Seed, Tempo, Tick, TrackId};
 use musicos_harmony::{parse_note_name, parse_scale_kind, Chord, Scale};
 use musicos_music_core::Pattern;
-use musicos_project_model::{Command, TrackKind};
+use musicos_project_model::{Command, Device, TrackKind};
 use musicos_project_service::{ProjectSession, Transaction};
 use musicos_storage::BundleStore;
 use schemars::JsonSchema;
@@ -156,6 +156,7 @@ impl Tool for GetProjectSummary {
                 json!({
                     "id": t.id.0, "name": t.name, "kind": format!("{:?}", t.kind),
                     "clips": t.placements.len(),
+                    "inserts": t.inserts.iter().map(device_name).collect::<Vec<_>>(),
                 })
             })
             .collect();
@@ -419,6 +420,10 @@ fn summarize_command(cmd: &Command) -> String {
             format!("set track {} gain {gain_db:+.1} dB", track.0)
         }
         Command::SetTrackPan { track, pan } => format!("set track {} pan {pan:+.2}", track.0),
+        Command::AddDevice { track, .. } => format!("add device to track {}", track.0),
+        Command::RemoveDevice { track, index } => {
+            format!("remove device {index} from track {}", track.0)
+        }
         Command::PlaceClip { clip, at } => format!("place clip {} at {}", clip.0, at.0),
         Command::UnplaceClip { clip, at } => format!("unplace clip {} from {}", clip.0, at.0),
         Command::AddMarker { at, name } => format!("add marker '{name}' at {}", at.0),
@@ -938,6 +943,107 @@ impl Tool for PlaceClip {
     }
 }
 
+// --- inserts: add_device / remove_device ------------------------------------------
+
+/// Input for `add_device`.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct AddDeviceInput {
+    /// Target track id.
+    track_id: u64,
+    /// The device. Kinds and fields:
+    /// `{"kind":"eq","mode":"low_pass|high_pass|peak","freq_hz":..,"q":..,"gain_db":..}`,
+    /// `{"kind":"compressor","threshold_db":..,"ratio":..,"attack_ms":..,"release_ms":..,"makeup_db":..}`,
+    /// `{"kind":"delay","time_ms":..,"feedback":..,"mix":..}`,
+    /// `{"kind":"reverb","room":..,"damping":..,"mix":..}`.
+    device: Device,
+}
+
+struct AddDevice;
+
+impl Tool for AddDevice {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "add_device",
+            description: "Append an insert effect (eq, compressor, delay, reverb) to a \
+                          track's chain; effects run in order before gain/pan. \
+                          Undoable.",
+            params_schema: schema::<AddDeviceInput>(),
+        }
+    }
+
+    fn call(&self, ctx: &mut ProjectCtx, input: Value) -> Result<Value, ToolError> {
+        let input: AddDeviceInput = parse(input)?;
+        ctx.commit(Command::AddDevice {
+            track: TrackId(input.track_id),
+            device: input.device,
+        })?;
+        let chain = device_chain(ctx, input.track_id);
+        Ok(json!({
+            "track_id": input.track_id,
+            "chain": chain,
+            "summary": format!("track {} inserts: {}", input.track_id, chain.join(" -> ")),
+        }))
+    }
+}
+
+/// Input for `remove_device`.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct RemoveDeviceInput {
+    /// Target track id.
+    track_id: u64,
+    /// Zero-based position in the insert chain.
+    index: usize,
+}
+
+struct RemoveDevice;
+
+impl Tool for RemoveDevice {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "remove_device",
+            description: "Remove the insert effect at an index from a track's chain.",
+            params_schema: schema::<RemoveDeviceInput>(),
+        }
+    }
+
+    fn call(&self, ctx: &mut ProjectCtx, input: Value) -> Result<Value, ToolError> {
+        let input: RemoveDeviceInput = parse(input)?;
+        ctx.commit(Command::RemoveDevice {
+            track: TrackId(input.track_id),
+            index: input.index,
+        })?;
+        let chain = device_chain(ctx, input.track_id);
+        Ok(json!({
+            "track_id": input.track_id,
+            "chain": chain,
+            "summary": format!(
+                "track {} inserts: {}",
+                input.track_id,
+                if chain.is_empty() { "(none)".to_string() } else { chain.join(" -> ") }
+            ),
+        }))
+    }
+}
+
+fn device_chain(ctx: &ProjectCtx, track_id: u64) -> Vec<String> {
+    ctx.state()
+        .tracks
+        .iter()
+        .find(|t| t.id.0 == track_id)
+        .map(|t| t.inserts.iter().map(device_name).collect())
+        .unwrap_or_default()
+}
+
+fn device_name(device: &Device) -> String {
+    match device {
+        Device::Eq { .. } => "eq".to_string(),
+        Device::Compressor { .. } => "compressor".to_string(),
+        Device::Delay { .. } => "delay".to_string(),
+        Device::Reverb { .. } => "reverb".to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
 /// The canonical tool registry.
 pub struct Registry {
     tools: Vec<Box<dyn Tool>>,
@@ -961,6 +1067,8 @@ impl Registry {
                 Box::new(GenerateDrums),
                 Box::new(AddSectionMarkers),
                 Box::new(PlaceClip),
+                Box::new(AddDevice),
+                Box::new(RemoveDevice),
                 Box::new(Undo),
             ],
         }
