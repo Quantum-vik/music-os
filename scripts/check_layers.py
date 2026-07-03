@@ -52,6 +52,7 @@ LAYERS = {
     "musicos-sdk": 4,
     # 5 — apps (composition roots: may name anything below)
     "musicos-cli": 5,
+    "musicos-link": 5,
     "musicos-desktop": 5,
     "musicos-server": 5,
 }

@@ -1,0 +1,25 @@
+[package]
+name = "musicos-link"
+description = "Ableton Link bridge: streams a MusicOS project as MIDI, tempo-synced to a Link session."
+# GPL because Ableton Link (via rusty_link) is GPL-2.0. Kept as a separate
+# binary so the rest of the MusicOS workspace stays Apache-2.0 OR MIT.
+license = "GPL-2.0-or-later"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "music-link"
+path = "src/main.rs"
+
+[dependencies]
+rusty_link = "0.4"
+midir = { workspace = true }
+ctrlc = "3"
+musicos-midi-stream = { workspace = true }
+musicos-storage = { workspace = true }
+
+[lints]
+workspace = true

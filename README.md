@@ -204,3 +204,18 @@ FL Studio's (or any DAW's) own instruments render the music in real time:
 2. In the DAW, set that port as the MIDI input for your instruments.
    Each MusicOS track streams on its own MIDI channel (track 0 -> ch 1, ...).
 3. `music stream --from-bar 16` seeks; Ctrl-C stops (with all-notes-off).
+
+### Tempo-sync with Ableton Link
+
+`music-link` (separate GPL-2.0 binary — Ableton Link's license) joins the
+local Link session and streams the project as MIDI at the **session tempo**,
+launching quantized to the bar and following live tempo changes:
+
+```
+cargo build --release -p musicos-link
+./target/release/music-link Song.musicos            # virtual "MusicOS Link Out" port
+./target/release/music-link Song.musicos --port loopMIDI --quantum 4
+```
+
+Enable Link in your DAW (Live, FL Studio, Bitwig), point its MIDI input at
+the port, press play anywhere — everything locks to the same beat grid.

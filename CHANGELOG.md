@@ -8,6 +8,11 @@ semantic versioning. Project format compatibility is governed separately by
 ## [Unreleased]
 
 ### Added
+- Ableton Link tempo sync: new `music-link` binary (GPL-2.0, isolated in
+  `apps/link` so the workspace stays Apache/MIT) joins the local Link
+  session and streams project MIDI at session tempo with quantized launch
+  and live tempo following; `midi-stream::schedule_beats` supports any
+  external clock.
 - Player GUI v1: the plugin advertises the CLAP `gui` extension; opening
   the plugin window in the DAW shows a native project-picker dialog —
   chosen bundles join the library, get selected, and re-render in the

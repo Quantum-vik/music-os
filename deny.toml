@@ -31,6 +31,12 @@ ignore = [
 ]
 
 [licenses]
+# Ableton Link is GPL-2.0; the bridge lives in its own GPL binary crate
+# (apps/link) so the rest of MusicOS stays Apache-2.0 OR MIT (README notes).
+exceptions = [
+    { name = "rusty_link", allow = ["GPL-2.0"] },
+    { name = "musicos-link", allow = ["GPL-2.0"] },
+]
 version = 2
 allow = [
     "MIT",

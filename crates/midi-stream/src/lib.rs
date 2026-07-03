@@ -74,6 +74,61 @@ pub fn schedule(state: &ProjectState, start_bar: u64) -> Vec<Event> {
     events
 }
 
+/// One beat-scheduled MIDI message (quarter-note beats from stream start).
+/// Used by external clock followers (e.g. the Ableton Link bridge), which
+/// map beats to wall time themselves.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BeatEvent {
+    /// When to send, in beats from stream start.
+    pub at_beats: f64,
+    /// Raw 3-byte channel message.
+    pub bytes: [u8; 3],
+}
+
+/// Like [`schedule`], but positions are quarter-note beats from `start_bar`
+/// instead of seconds, letting an external clock own the tempo.
+pub fn schedule_beats(state: &ProjectState, start_bar: u64) -> Vec<BeatEvent> {
+    let start_tick = Tick(i64::try_from(start_bar).unwrap_or(0) * musicos_core_types::PPQ * 4);
+    #[allow(clippy::cast_precision_loss)]
+    let beats_of = |t: Tick| (t.0 - start_tick.0) as f64 / musicos_core_types::PPQ as f64;
+    let mut events = Vec::new();
+    for (index, track) in state
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Midi && !t.mix.muted)
+        .enumerate()
+    {
+        #[allow(clippy::cast_possible_truncation)]
+        let channel = (index % 16) as u8;
+        for placement in &track.placements {
+            let clip = &state.clips[&placement.clip];
+            for note in clip.pattern.notes() {
+                let on = placement.at + note.start;
+                let off = placement.at + note.end();
+                if off <= start_tick {
+                    continue;
+                }
+                if on >= start_tick {
+                    events.push(BeatEvent {
+                        at_beats: beats_of(on),
+                        bytes: [NOTE_ON | channel, note.pitch.note, note.velocity.get()],
+                    });
+                }
+                events.push(BeatEvent {
+                    at_beats: beats_of(off),
+                    bytes: [NOTE_OFF | channel, note.pitch.note, 0],
+                });
+            }
+        }
+    }
+    events.sort_by(|a, b| {
+        a.at_beats
+            .total_cmp(&b.at_beats)
+            .then_with(|| (a.bytes[0] & 0xF0).cmp(&(b.bytes[0] & 0xF0)))
+    });
+    events
+}
+
 fn tick_seconds(state: &ProjectState, at: Tick) -> f64 {
     #[allow(clippy::cast_precision_loss)]
     let micros = state.tempo_map.tick_to_samples(at, CLOCK_RATE).max(0) as f64;
@@ -274,6 +329,19 @@ mod tests {
         // Seeking to bar 0 keeps everything; a stop mid-note keeps its off.
         let all = schedule(&state, 0);
         assert_eq!(all.len(), 8);
+    }
+
+    #[test]
+    fn schedule_beats_matches_schedule_at_fixed_tempo() {
+        let state = project();
+        let beats = schedule_beats(&state, 0);
+        let secs = schedule(&state, 0);
+        assert_eq!(beats.len(), secs.len());
+        // 120 bpm: 1 beat = 0.5 s; the two schedules must agree pairwise.
+        for (b, s) in beats.iter().zip(secs.iter()) {
+            assert_eq!(b.bytes, s.bytes);
+            assert!((b.at_beats * 0.5 - s.at_seconds).abs() < 1e-9);
+        }
     }
 
     #[test]

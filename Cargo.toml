@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["apps/cli", "apps/desktop", "apps/server", "crates/*", "plugins/*", "sdk/rust"]
+members = ["apps/cli", "apps/desktop", "apps/link", "apps/server", "crates/*", "plugins/*", "sdk/rust"]
 
 [workspace.package]
 version = "0.0.1"
