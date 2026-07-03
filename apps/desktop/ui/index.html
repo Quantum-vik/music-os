@@ -78,6 +78,7 @@
     <h3>Render</h3>
     <div class="row"><label>output</label><input id="renderOut" placeholder="song.wav" size="26"></div>
     <div class="row"><label>master</label><input id="masterLufs" type="number" placeholder="-14" step="0.5" style="width:72px"><small>LUFS (blank = natural)</small></div>
+    <div class="row"><label>stems</label><input id="stemsDir" placeholder="stems/ (blank = none)" size="26"><small>one WAV per track, for your DAW</small></div>
     <div class="row"><button class="primary" onclick="render()">Render</button><small id="renderMsg"></small></div>
   </section>
 
@@ -136,6 +137,8 @@ async function render() {
   const input = { output: $('renderOut').value || 'song.wav' };
   const target = $('masterLufs').value;
   if (target !== '') input.master_lufs = +target;
+  const stems = $('stemsDir').value.trim();
+  if (stems !== '') input.stems_dir = stems;
   show('renderMsg', 'rendering...');
   try { const r = await call('render_song', input); show('renderMsg', r.summary); }
   catch (e) { show('renderMsg', String(e)); }

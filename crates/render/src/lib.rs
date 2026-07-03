@@ -449,6 +449,85 @@ pub struct RenderReport {
     pub lufs: Option<f64>,
 }
 
+/// One written stem file.
+#[derive(Debug, Clone)]
+pub struct StemFile {
+    /// Source track id.
+    pub track_id: u64,
+    /// Track name (also in the file name).
+    pub name: String,
+    /// Written WAV path.
+    pub path: std::path::PathBuf,
+    /// Sample peak of the stem (linear).
+    pub peak: f32,
+}
+
+/// Renders one WAV per audible track (docs/12 "DAW bridges"): each stem is
+/// the full mix pipeline — synth, inserts, gain/pan — with every other track
+/// muted, so importing all stems into another DAW reproduces the mix.
+/// Silent/muted tracks are skipped. Mastering (`master_lufs`) is ignored for
+/// stems; level decisions move to the destination DAW.
+///
+/// # Errors
+/// Fails when no track produces audio, or on I/O errors.
+pub fn render_stems(
+    state: &ProjectState,
+    opts: &RenderOptions,
+    dir: &Path,
+) -> Result<Vec<StemFile>, RenderError> {
+    std::fs::create_dir_all(dir).map_err(hound::Error::IoError)?;
+    let stem_opts = RenderOptions {
+        master_lufs: None,
+        ..*opts
+    };
+    let mut stems = Vec::new();
+    for track in &state.tracks {
+        if track.mix.muted {
+            continue;
+        }
+        let mut solo = state.clone();
+        for other in &mut solo.tracks {
+            other.mix.muted = other.id != track.id;
+        }
+        let Ok(buffer) = render_project(&solo, &stem_opts) else {
+            continue; // this track alone has nothing to render
+        };
+        let safe: String = track
+            .name
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let path = dir.join(format!("{:02} {safe}.wav", track.id.0));
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: stem_opts.sample_rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec)?;
+        for s in buffer.interleave() {
+            writer.write_sample((s.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16)?;
+        }
+        writer.finalize()?;
+        stems.push(StemFile {
+            track_id: track.id.0,
+            name: track.name.clone(),
+            path,
+            peak: buffer.peak(),
+        });
+    }
+    if stems.is_empty() {
+        return Err(RenderError::EmptyProject);
+    }
+    Ok(stems)
+}
+
 /// Loudness/peak analysis of an existing WAV file.
 #[derive(Debug, Clone, Copy)]
 pub struct WavAnalysis {
@@ -541,6 +620,53 @@ mod tests {
     use musicos_core_types::{Pitch, ProjectId, Tick, TrackId, Velocity, PPQ};
     use musicos_music_core::{Note, Pattern};
     use musicos_project_model::Command;
+
+    /// Stems reproduce the mix: summing every stem equals the full render
+    /// (both unmastered, generous peak ceiling so limiting never engages).
+    #[test]
+    fn stems_sum_to_the_full_mix() {
+        let state = demo_project();
+        let opts = RenderOptions {
+            peak_ceiling: 1.0,
+            ..RenderOptions::default()
+        };
+        let dir = std::env::temp_dir().join(format!("musicos-stems-{}", std::process::id()));
+        let stems = render_stems(&state, &opts, &dir).unwrap();
+        assert!(!stems.is_empty());
+        for stem in &stems {
+            assert!(stem.path.is_file(), "{} missing", stem.path.display());
+            assert!(stem.peak > 0.0, "stem {} is silent", stem.name);
+        }
+
+        let full = render_project(&state, &opts).unwrap();
+        let mut sum_l = vec![0.0f32; full.left.len()];
+        let mut sum_r = vec![0.0f32; full.right.len()];
+        for stem in &stems {
+            let a = analyze_wav(&stem.path).unwrap();
+            assert_eq!(a.sample_rate, opts.sample_rate);
+            let mut reader = hound::WavReader::open(&stem.path).unwrap();
+            let samples: Vec<f32> = reader
+                .samples::<i16>()
+                .map(|s| f32::from(s.unwrap()) / f32::from(i16::MAX))
+                .collect();
+            for (i, frame) in samples.chunks_exact(2).enumerate() {
+                if i < sum_l.len() {
+                    sum_l[i] += frame[0];
+                    sum_r[i] += frame[1];
+                }
+            }
+        }
+        // 16-bit quantization per stem bounds the per-sample error.
+        let tolerance = 2.0 * stems.len() as f32 / f32::from(i16::MAX) + 1e-4;
+        for i in 0..sum_l.len() {
+            assert!(
+                (sum_l[i] - full.left[i]).abs() <= tolerance
+                    && (sum_r[i] - full.right[i]).abs() <= tolerance,
+                "stems diverge from mix at frame {i}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// Mastering targets integrated loudness and `analyze_wav` reads it back.
     #[test]

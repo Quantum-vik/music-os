@@ -471,6 +471,10 @@ struct RenderSongInput {
     /// platforms). Omit to render at natural level.
     #[serde(default)]
     master_lufs: Option<f32>,
+    /// Also write one WAV per audible track into this directory (stems for
+    /// mixing in another DAW). Omit to skip stems.
+    #[serde(default)]
+    stems_dir: Option<String>,
 }
 
 struct RenderSong;
@@ -509,14 +513,32 @@ impl Tool for RenderSong {
                 code: "E_RENDER",
                 message: e.to_string(),
             })?;
+        let stems = input
+            .stems_dir
+            .as_ref()
+            .map(|dir| {
+                musicos_render::render_stems(ctx.state(), &opts, std::path::Path::new(dir)).map_err(
+                    |e| ToolError {
+                        code: "E_RENDER",
+                        message: e.to_string(),
+                    },
+                )
+            })
+            .transpose()?
+            .unwrap_or_default();
         Ok(json!({
             "output": input.output,
             "seconds": report.seconds,
             "frames": report.frames,
             "peak": report.peak,
             "lufs": report.lufs,
+            "stems": stems
+                .iter()
+                .map(|f| json!({ "track_id": f.track_id, "name": f.name,
+                                 "path": f.path.display().to_string() }))
+                .collect::<Vec<_>>(),
             "summary": format!(
-                "rendered {:.1}s ({} frames, peak {:.2}, {}) -> {}",
+                "rendered {:.1}s ({} frames, peak {:.2}, {}){} -> {}",
                 report.seconds,
                 report.frames,
                 report.peak,
@@ -524,6 +546,11 @@ impl Tool for RenderSong {
                     || "loudness unmeasurable".to_string(),
                     |l| format!("{l:.1} LUFS")
                 ),
+                if stems.is_empty() {
+                    String::new()
+                } else {
+                    format!(" + {} stem(s)", stems.len())
+                },
                 input.output
             ),
         }))

@@ -103,6 +103,9 @@ enum Command {
         /// Master to this integrated loudness in LUFS (e.g. -14).
         #[arg(long, allow_hyphen_values = true)]
         master: Option<f32>,
+        /// Also write per-track stem WAVs into this directory.
+        #[arg(long)]
+        stems: Option<PathBuf>,
     },
     /// Measure peak and integrated loudness (LUFS) of a WAV file.
     Analyze {
@@ -309,6 +312,7 @@ fn run(cli: &Cli, config: &musicos_config::Config) -> anyhow::Result<Value> {
             output,
             rate,
             master,
+            stems,
         } => call_tool(
             cli,
             "render_song",
@@ -316,6 +320,7 @@ fn run(cli: &Cli, config: &musicos_config::Config) -> anyhow::Result<Value> {
                 "output": output.display().to_string(),
                 "sample_rate": rate.unwrap_or(config.render.sample_rate),
                 "master_lufs": master,
+                "stems_dir": stems.as_ref().map(|s| s.display().to_string()),
             }),
         ),
         Command::Analyze { file } => {
