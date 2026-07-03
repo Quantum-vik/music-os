@@ -542,7 +542,7 @@ mod tests {
     use musicos_music_core::{Note, Pattern};
     use musicos_project_model::Command;
 
-    /// Mastering targets integrated loudness and analyze_wav reads it back.
+    /// Mastering targets integrated loudness and `analyze_wav` reads it back.
     #[test]
     fn mastering_hits_the_loudness_target() {
         let state = demo_project();
