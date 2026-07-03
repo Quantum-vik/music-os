@@ -125,7 +125,11 @@ enum Command {
         input: String,
     },
     /// List native plugins and installed CLAP bundles.
-    Plugins,
+    Plugins {
+        /// Load a specific .clap file and list the plugins inside it.
+        #[arg(long)]
+        probe: Option<std::path::PathBuf>,
+    },
     /// List every registered tool and its JSON input schema.
     Tools,
     /// File-level MIDI utilities (no project needed).
@@ -350,7 +354,27 @@ fn run(cli: &Cli, config: &musicos_config::Config) -> anyhow::Result<Value> {
                 .map_err(|e| anyhow::anyhow!("input is not valid JSON: {e}"))?;
             call_tool(cli, tool, parsed)
         }
-        Command::Plugins => {
+        Command::Plugins { probe } => {
+            if let Some(path) = probe {
+                // SAFETY: probing runs the library's entry code; the user
+                // explicitly named this file on the command line.
+                let library = unsafe { musicos_plugin_host::clap_host::ClapLibrary::load(path) }?;
+                let plugins: Vec<Value> = library
+                    .plugins()?
+                    .iter()
+                    .map(|p| {
+                        json!({
+                            "id": p.id, "name": p.name,
+                            "vendor": p.vendor, "version": p.version,
+                        })
+                    })
+                    .collect();
+                return Ok(json!({
+                    "path": path.display().to_string(),
+                    "plugins": plugins,
+                    "summary": format!("{} plugin(s) in {}", plugins.len(), path.display()),
+                }));
+            }
             let registry = musicos_plugin_host::HostRegistry::with_builtins();
             let native: Vec<Value> = registry
                 .descriptors()
@@ -370,7 +394,7 @@ fn run(cli: &Cli, config: &musicos_config::Config) -> anyhow::Result<Value> {
                 "native": native,
                 "clap": clap,
                 "summary": format!(
-                    "{} native plugin(s), {} CLAP bundle(s) installed (loading lands next)",
+                    "{} native plugin(s), {} CLAP bundle(s) installed (probe with --probe <path>)",
                     native.len(),
                     clap.len()
                 ),

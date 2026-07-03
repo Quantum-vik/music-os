@@ -3,9 +3,11 @@
 //! Phase 5 groundwork (docs/09): [`HostRegistry`] holds compiled-in native
 //! plugins (registered at each app's composition root — ADR-0014 phase 1),
 //! and [`discover_clap`] scans the platform's standard CLAP directories for
-//! installed bundles. Loading CLAP binaries (dlopen + `clap_entry`) is the
-//! next milestone; discovery is deliberately separate so scan results can be
-//! cached and quarantined per docs/09 §3.
+//! installed bundles. [`clap_host`] loads CLAP binaries (dlopen +
+//! `clap_entry`) and adapts them to [`ProcessorPlugin`]; discovery stays
+//! separate so scan results can be cached and quarantined per docs/09 §3.
+
+pub mod clap_host;
 
 use std::path::PathBuf;
 
