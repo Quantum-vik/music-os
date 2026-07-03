@@ -1,0 +1,6 @@
+# cargo-audit configuration (the audit CI job; cargo-deny has its own list).
+[advisories]
+# quick-xml < 0.41 quadratic-runtime DoS, pinned transitively by plist ^0.39
+# (tauri -> plist). Only parses tauri's own local config/plist files — never
+# attacker-controlled input. Remove when plist releases against >= 0.41.
+ignore = ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
