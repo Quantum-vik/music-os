@@ -112,6 +112,250 @@ impl SimpleSynth {
     }
 }
 
+// --- Streaming engine (docs/04 §5) ----------------------------------------------
+
+/// Maximum simultaneous voices per streaming synth (fixed pool; stealing
+/// beyond this — docs/04 §5).
+pub const MAX_VOICES: usize = 32;
+
+/// A scheduled note at sample resolution (produced by graph compilation).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NoteEvent {
+    /// Absolute frame the note starts on.
+    pub start_frame: u64,
+    /// Absolute frame the note is released on.
+    pub end_frame: u64,
+    /// Pitch.
+    pub pitch: Pitch,
+    /// Amplitude 0..=1 (velocity mapped).
+    pub gain: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Voice {
+    step: f32,
+    phase: f32,
+    gain: f32,
+    held_frames: u64,
+    frames_done: u64,
+    attack_frames: f32,
+    release_frames: f32,
+}
+
+impl Voice {
+    fn tick(&mut self, waveform: Waveform) -> f32 {
+        #[allow(clippy::cast_precision_loss)]
+        let t = self.frames_done as f32;
+        let env_attack = (t / self.attack_frames).min(1.0);
+        let env_release = if self.frames_done < self.held_frames {
+            1.0
+        } else {
+            #[allow(clippy::cast_precision_loss)]
+            let past = (self.frames_done - self.held_frames) as f32;
+            (1.0 - past / self.release_frames).max(0.0)
+        };
+        let sample = match waveform {
+            Waveform::Saw => 2.0 * self.phase - 1.0,
+            Waveform::Sine => (core::f32::consts::TAU * self.phase).sin(),
+            Waveform::Square => {
+                if self.phase < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+        };
+        self.phase += self.step;
+        if self.phase >= 1.0 {
+            self.phase -= 1.0;
+        }
+        self.frames_done += 1;
+        sample * env_attack * env_release * self.gain * 0.3
+    }
+
+    fn finished(&self) -> bool {
+        #[allow(clippy::cast_precision_loss)]
+        let past = self.frames_done.saturating_sub(self.held_frames) as f32;
+        self.frames_done >= self.held_frames && past >= self.release_frames
+    }
+}
+
+/// A streaming polyphonic synthesizer: consumes a sample-accurate
+/// [`NoteEvent`] schedule and produces mono audio block by block with a fixed
+/// voice pool. Monotonic playback is the fast path; a non-monotonic
+/// `frame_offset` performs a seek (voices cleared, cursor repositioned).
+#[derive(Debug, Clone)]
+pub struct StreamingSynth {
+    synth: SimpleSynth,
+    sample_rate: u32,
+    events: Vec<NoteEvent>,
+    cursor: usize,
+    next_frame: u64,
+    voices: Vec<Voice>,
+}
+
+impl StreamingSynth {
+    /// Creates a streaming synth over a schedule (sorted internally).
+    pub fn new(synth: SimpleSynth, sample_rate: u32, mut events: Vec<NoteEvent>) -> Self {
+        events.sort_by_key(|e| e.start_frame);
+        StreamingSynth {
+            synth,
+            sample_rate,
+            events,
+            cursor: 0,
+            next_frame: 0,
+            voices: Vec::with_capacity(MAX_VOICES),
+        }
+    }
+
+    /// Repositions playback to `frame` (voices cut, schedule cursor moved).
+    pub fn seek(&mut self, frame: u64) {
+        self.voices.clear();
+        self.cursor = self.events.partition_point(|e| e.start_frame < frame);
+        self.next_frame = frame;
+    }
+
+    /// Synthesizes one mono block starting at absolute `frame_offset`.
+    pub fn process(&mut self, frame_offset: u64, out: &mut [f32]) {
+        if frame_offset != self.next_frame {
+            self.seek(frame_offset);
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let sr = self.sample_rate.max(1) as f32;
+        let attack_frames = (self.synth.attack * sr).max(1.0);
+        let release_frames = (self.synth.release * sr).max(1.0);
+
+        for (i, slot) in out.iter_mut().enumerate() {
+            let frame = frame_offset + i as u64;
+            // Trigger every event scheduled for this exact frame.
+            while self.cursor < self.events.len() && self.events[self.cursor].start_frame == frame {
+                let event = self.events[self.cursor];
+                self.cursor += 1;
+                let voice = Voice {
+                    step: SimpleSynth::frequency(event.pitch) / sr,
+                    phase: 0.0,
+                    gain: event.gain,
+                    held_frames: event.end_frame.saturating_sub(event.start_frame).max(1),
+                    frames_done: 0,
+                    attack_frames,
+                    release_frames,
+                };
+                if self.voices.len() < MAX_VOICES {
+                    self.voices.push(voice);
+                } else if let Some(steal) = self.steal_index() {
+                    self.voices[steal] = voice;
+                }
+            }
+            let mut acc = 0.0;
+            for voice in &mut self.voices {
+                acc += voice.tick(self.synth.waveform);
+            }
+            self.voices.retain(|v| !v.finished());
+            *slot = acc;
+        }
+        self.next_frame = frame_offset + out.len() as u64;
+    }
+
+    /// Steal policy: the most-finished releasing voice, else the oldest.
+    fn steal_index(&self) -> Option<usize> {
+        self.voices
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, v)| (v.frames_done >= v.held_frames, v.frames_done))
+            .map(|(i, _)| i)
+    }
+
+    /// Frames of release tail after the last event ends.
+    pub fn tail_frames(&self) -> u64 {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let tail = (self.synth.release * self.sample_rate.max(1) as f32).ceil() as u64;
+        tail
+    }
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+
+    fn schedule() -> Vec<NoteEvent> {
+        vec![
+            NoteEvent {
+                start_frame: 0,
+                end_frame: 4800,
+                pitch: Pitch::new(60),
+                gain: 0.8,
+            },
+            NoteEvent {
+                start_frame: 2400,
+                end_frame: 7200,
+                pitch: Pitch::new(64),
+                gain: 0.8,
+            },
+        ]
+    }
+
+    #[test]
+    fn chunking_is_invariant() {
+        // One big buffer must equal many small blocks — the streaming contract.
+        let mut a = StreamingSynth::new(SimpleSynth::default(), 48_000, schedule());
+        let mut big = vec![0.0f32; 9600];
+        a.process(0, &mut big);
+
+        let mut b = StreamingSynth::new(SimpleSynth::default(), 48_000, schedule());
+        let mut small = vec![0.0f32; 9600];
+        for (i, chunk) in small.chunks_mut(512).enumerate() {
+            b.process(i as u64 * 512, chunk);
+        }
+        assert_eq!(big, small);
+    }
+
+    #[test]
+    fn voice_pool_is_bounded_under_burst() {
+        let burst: Vec<NoteEvent> = (0..100)
+            .map(|n| NoteEvent {
+                start_frame: 0,
+                end_frame: 48_000,
+                pitch: Pitch::new(30 + (n % 60)),
+                gain: 0.5,
+            })
+            .collect();
+        let mut synth = StreamingSynth::new(SimpleSynth::default(), 48_000, burst);
+        let mut out = vec![0.0f32; 512];
+        synth.process(0, &mut out);
+        assert!(synth.voices.len() <= MAX_VOICES);
+        assert!(out.iter().any(|s| s.abs() > 0.01));
+        assert!(out.iter().all(|s| s.is_finite()));
+    }
+
+    #[test]
+    fn release_tail_rings_past_note_end_then_dies() {
+        let events = vec![NoteEvent {
+            start_frame: 0,
+            end_frame: 1000,
+            pitch: Pitch::new(69),
+            gain: 1.0,
+        }];
+        let mut synth = StreamingSynth::new(SimpleSynth::default(), 48_000, events);
+        let mut out = vec![0.0f32; 8000];
+        synth.process(0, &mut out);
+        assert!(out[1500].abs() > 0.0, "release tail after note-off");
+        assert!(out[7500].abs() < 1e-6, "silent after the tail");
+    }
+
+    #[test]
+    fn seek_repositions_and_stays_deterministic() {
+        let mut a = StreamingSynth::new(SimpleSynth::default(), 48_000, schedule());
+        let mut from_seek = vec![0.0f32; 512];
+        a.process(2400, &mut from_seek); // non-monotonic entry = seek
+                                         // A fresh synth seeked to the same place produces the same audio.
+        let mut b = StreamingSynth::new(SimpleSynth::default(), 48_000, schedule());
+        b.seek(2400);
+        let mut fresh = vec![0.0f32; 512];
+        b.process(2400, &mut fresh);
+        assert_eq!(from_seek, fresh);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

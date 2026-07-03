@@ -18,7 +18,7 @@ use musicos_core_types::Tick;
 use musicos_dsp::{
     db_to_gain, pan_gains, BiquadMode, BiquadStereo, Compressor, Reverb, StereoBuffer, StereoDelay,
 };
-use musicos_instruments::SimpleSynth;
+use musicos_instruments::{NoteEvent, SimpleSynth, StreamingSynth};
 use musicos_project_model::{ChannelStrip, Device, EqMode, ProjectState, TrackKind};
 
 /// Render parameters.
@@ -258,6 +258,98 @@ pub fn compile_project(
     Ok((compiled, total))
 }
 
+/// A streaming source node: live voice-managed synthesis from a schedule
+/// (docs/04 §5) — constant memory, instant start, seekable.
+struct StreamingTrackNode {
+    synth: StreamingSynth,
+    scratch: Vec<f32>,
+}
+
+impl Node for StreamingTrackNode {
+    fn process(&mut self, frame_offset: usize, _: &[&StereoBlock], out: &mut StereoBlock) {
+        self.synth.process(frame_offset as u64, &mut self.scratch);
+        out.left.copy_from_slice(&self.scratch);
+        out.right.copy_from_slice(&self.scratch);
+    }
+}
+
+/// Sample-accurate note schedule for one track (placements expanded).
+fn track_note_events(
+    state: &ProjectState,
+    track: &musicos_project_model::Track,
+    sample_rate: u32,
+) -> Vec<NoteEvent> {
+    let mut events = Vec::new();
+    for placement in &track.placements {
+        let clip = &state.clips[&placement.clip];
+        for note in clip.pattern.notes() {
+            let start = state
+                .tempo_map
+                .tick_to_samples(placement.at + note.start, sample_rate);
+            let end = state
+                .tempo_map
+                .tick_to_samples(placement.at + note.end(), sample_rate);
+            #[allow(clippy::cast_sign_loss)]
+            events.push(NoteEvent {
+                start_frame: start.max(0) as u64,
+                end_frame: end.max(start + 1).max(0) as u64,
+                pitch: note.pitch,
+                gain: f32::from(note.velocity.get()) / 127.0,
+            });
+        }
+    }
+    events
+}
+
+/// Compiles a project into a **streaming** graph: sources synthesize live
+/// per block instead of pre-rendering (the Phase 4 engine path). Same
+/// insert/strip/master chain as the offline compiler.
+///
+/// # Errors
+/// Returns [`RenderError::EmptyProject`] if no MIDI clip contains notes.
+pub fn compile_project_streaming(
+    state: &ProjectState,
+    opts: &RenderOptions,
+) -> Result<(CompiledGraph, usize), RenderError> {
+    let sr = opts.sample_rate;
+    let synth = SimpleSynth::default();
+    let mut graph = Graph::new();
+    let master = graph.add(Box::new(MasterSum));
+    let mut last_end: u64 = 0;
+    let mut any = false;
+
+    for track in state.tracks.iter().filter(|t| t.kind == TrackKind::Midi) {
+        let events = track_note_events(state, track, sr);
+        if events.is_empty() {
+            continue;
+        }
+        any = true;
+        last_end = last_end.max(events.iter().map(|e| e.end_frame).max().unwrap_or(0));
+        let streaming = StreamingSynth::new(synth, sr, events);
+        let source = graph.add(Box::new(StreamingTrackNode {
+            synth: streaming,
+            scratch: vec![0.0; musicos_audio_graph::BLOCK],
+        }));
+        let mut upstream = source;
+        for device in track.inserts.clone() {
+            let node = graph.add(Box::new(InsertNode::build(device, sr)));
+            graph.connect(upstream, node).map_err(RenderError::Graph)?;
+            upstream = node;
+        }
+        let strip = graph.add(Box::new(StripNode::new(track.mix)));
+        graph.connect(upstream, strip).map_err(RenderError::Graph)?;
+        graph.connect(strip, master).map_err(RenderError::Graph)?;
+    }
+    if !any {
+        return Err(RenderError::EmptyProject);
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let tail =
+        (opts.tail_seconds * sr as f32).ceil() as u64 + (synth.release * sr as f32).ceil() as u64;
+    let total = usize::try_from(last_end + tail).expect("song length fits usize");
+    Ok((graph.compile(master).map_err(RenderError::Graph)?, total))
+}
+
 /// Renders a project to a stereo buffer via the compiled graph.
 ///
 /// # Errors
@@ -467,6 +559,24 @@ mod tests {
         );
         // Determinism holds with DSP in the chain.
         assert_eq!(wet, render_project(&state, &opts).unwrap());
+    }
+
+    #[test]
+    fn streaming_compile_matches_offline_length_and_makes_sound() {
+        let state = demo_project();
+        let opts = RenderOptions::default();
+        let (mut streaming, s_total) = compile_project_streaming(&state, &opts).unwrap();
+        let (_, o_total) = compile_project(&state, &opts).unwrap();
+        assert_eq!(s_total, o_total, "both compile paths agree on length");
+        let (left, _) = streaming.render(s_total);
+        assert!(
+            left.iter().any(|s| s.abs() > 0.05),
+            "streaming path is audible"
+        );
+        // Deterministic: a second streaming compile renders identically.
+        let (mut again, _) = compile_project_streaming(&state, &opts).unwrap();
+        let (left2, _) = again.render(s_total);
+        assert_eq!(left, left2);
     }
 
     #[test]

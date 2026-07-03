@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 musicos-audio-graph = { workspace = true }
+musicos-core-types = { workspace = true }
 musicos-project-model = { workspace = true }
 musicos-render = { workspace = true }
 thiserror = { workspace = true }
@@ -17,7 +18,6 @@ cpal = { workspace = true }
 rtrb = { workspace = true }
 
 [dev-dependencies]
-musicos-core-types = { workspace = true }
 musicos-music-core = { workspace = true }
 
 [lints]

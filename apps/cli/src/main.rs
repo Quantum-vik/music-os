@@ -71,7 +71,11 @@ enum Command {
         at: i64,
     },
     /// Play the project through the default audio output.
-    Play,
+    Play {
+        /// Start playback at this bar (4/4, 0-based).
+        #[arg(long, default_value_t = 0)]
+        from_bar: u64,
+    },
     /// Undo the most recent project transaction.
     Undo,
     /// Set track mix parameters (gain/pan/mute).
@@ -260,13 +264,13 @@ fn run(cli: &Cli, config: &musicos_config::Config) -> anyhow::Result<Value> {
             json!({ "path": input.display().to_string(), "at": at }),
         ),
         Command::Tempo { bpm, at } => call_tool(cli, "set_tempo", json!({ "bpm": bpm, "at": at })),
-        Command::Play => {
+        Command::Play { from_bar } => {
             let path = resolve_project(cli.project.as_deref())?;
             let ctx = ProjectCtx::open(&path, "user:cli")?;
             let state = ctx.state().clone();
             eprintln!("[musicos] playing '{}' — ctrl-c to stop", state.meta.name);
             let mut last_sec = u64::MAX;
-            musicos_audio_engine::play(&state, |(done, total)| {
+            musicos_audio_engine::play_from(&state, *from_bar, |(done, total)| {
                 let sec = done / 48_000;
                 if sec != last_sec {
                     last_sec = sec;

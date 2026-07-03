@@ -1,12 +1,14 @@
 //! Real-time audio runtime: transport, graph execution, and voice management.
 //!
-//! v0 playback (`docs/04` §2, honest scope): a **feeder thread** executes the
-//! compiled graph ahead of time and fills a lock-free SPSC ring; the CPAL
-//! audio callback only pops samples — wait-free and allocation-free on the
-//! device thread, Reaper-style anticipative rendering. The full streaming
-//! engine (sample-accurate transport, live voice management, graph swap under
-//! playback) is the Phase 4 milestone that replaces the feeder; the CPAL
-//! adapter and ring topology built here carry over (ADR-0006, ADR-0015).
+//! Phase 4 engine (`docs/04` §2/§5): playback is **streaming** — sources
+//! synthesize live per block with voice-managed polyphony (no pre-render),
+//! the feeder thread runs the graph slightly ahead and fills a lock-free
+//! SPSC ring, and the CPAL callback only pops — wait-free and
+//! allocation-free on the device thread (ADR-0006, ADR-0015). The feeder
+//! supports **graph swap at block boundaries** ([`SwapSlot`]) and
+//! sample-accurate **seek** (start-frame transport). Remaining Phase 4 work:
+//! live MIDI input and RT-thread graph execution proper (moving the graph
+//! off the feeder onto the callback with a command ring).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -14,7 +16,7 @@ use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use musicos_project_model::ProjectState;
-use musicos_render::{compile_project, RenderOptions};
+use musicos_render::{compile_project_streaming, RenderOptions};
 
 /// Ring capacity in frames (~0.5 s at 48 kHz — deep enough to ride out
 /// feeder-thread scheduling hiccups).
@@ -22,6 +24,68 @@ const RING_FRAMES: usize = 24_000;
 
 /// Playback progress: `(frames_played, total_frames)`.
 pub type Progress = (u64, u64);
+
+/// A slot for swapping the running graph at a block boundary (edit-during-
+/// playback seam, docs/04 §2). The feeder checks it between blocks; the old
+/// graph is dropped on the feeder thread, never the device thread.
+#[derive(Clone, Default)]
+pub struct SwapSlot(Arc<std::sync::Mutex<Option<(musicos_audio_graph::CompiledGraph, usize)>>>);
+
+impl SwapSlot {
+    /// Creates an empty slot.
+    pub fn new() -> SwapSlot {
+        SwapSlot::default()
+    }
+
+    /// Installs a replacement graph (+ its total frame count); it takes
+    /// effect at the feeder's next block boundary.
+    pub fn install(&self, graph: musicos_audio_graph::CompiledGraph, total_frames: usize) {
+        *self.0.lock().expect("swap slot lock") = Some((graph, total_frames));
+    }
+
+    fn take(&self) -> Option<(musicos_audio_graph::CompiledGraph, usize)> {
+        self.0.lock().expect("swap slot lock").take()
+    }
+}
+
+/// Runs the feeder loop: executes `graph` from `start_frame`, pushing
+/// interleaved stereo into `producer`, honoring `swap` at block boundaries
+/// and `stop`. Pure of any audio device — unit-testable.
+fn run_feeder(
+    mut graph: musicos_audio_graph::CompiledGraph,
+    mut total_frames: usize,
+    start_frame: usize,
+    mut producer: rtrb::Producer<f32>,
+    stop: &AtomicBool,
+    swap: &SwapSlot,
+) {
+    let mut written = start_frame;
+    'outer: while written < total_frames {
+        if let Some((new_graph, new_total)) = swap.take() {
+            graph = new_graph;
+            total_frames = new_total;
+            if written >= total_frames {
+                break;
+            }
+        }
+        let block = graph.process_block(written);
+        let take = musicos_audio_graph::BLOCK.min(total_frames - written);
+        for i in 0..take {
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    break 'outer;
+                }
+                if producer.slots() >= 2 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let _ = producer.push(block.left[i]);
+            let _ = producer.push(block.right[i]);
+        }
+        written += take;
+    }
+}
 
 /// Plays a project through the default output device, blocking until done.
 ///
@@ -31,8 +95,17 @@ pub type Progress = (u64, u64);
 /// # Errors
 /// Returns [`PlaybackError`] when no device is available, the stream cannot
 /// be built, or the project has nothing to play.
-pub fn play(
+pub fn play(state: &ProjectState, on_progress: impl FnMut(Progress)) -> Result<(), PlaybackError> {
+    play_from(state, 0, on_progress)
+}
+
+/// Plays a project starting at a bar (4/4), blocking until done.
+///
+/// # Errors
+/// Same as [`play`].
+pub fn play_from(
     state: &ProjectState,
+    start_bar: u64,
     mut on_progress: impl FnMut(Progress),
 ) -> Result<(), PlaybackError> {
     let host = cpal::default_host();
@@ -56,39 +129,41 @@ pub fn play(
         sample_rate,
         ..RenderOptions::default()
     };
-    let (mut graph, total_frames) =
-        compile_project(state, &opts).map_err(|e| PlaybackError::Compile(e.to_string()))?;
+    let (graph, total_frames) = compile_project_streaming(state, &opts)
+        .map_err(|e| PlaybackError::Compile(e.to_string()))?;
+    let start_tick = musicos_core_types::Tick(
+        i64::try_from(start_bar).unwrap_or(0) * musicos_core_types::PPQ * 4,
+    );
+    #[allow(clippy::cast_sign_loss)]
+    let start_frame = usize::try_from(
+        state
+            .tempo_map
+            .tick_to_samples(start_tick, sample_rate)
+            .max(0),
+    )
+    .unwrap_or(0)
+    .min(total_frames);
     let total = total_frames as u64;
 
     // SPSC ring: feeder pushes interleaved stereo, callback pops.
     let ring = rtrb::RingBuffer::<f32>::new(RING_FRAMES * 2);
-    let (mut producer, mut consumer) = ring;
+    let (producer, mut consumer) = ring;
     let played = Arc::new(AtomicU64::new(0));
     let stop = Arc::new(AtomicBool::new(false));
 
-    // Feeder thread: run the graph ahead of the callback.
+    // Feeder thread: run the streaming graph ahead of the callback.
     let feeder_stop = Arc::clone(&stop);
+    let swap = SwapSlot::new();
+    let feeder_swap = swap.clone();
     let feeder = std::thread::spawn(move || {
-        let mut written = 0usize;
-        'outer: while written < total_frames {
-            let block = graph.process_block(written);
-            let take = musicos_audio_graph::BLOCK.min(total_frames - written);
-            for i in 0..take {
-                // Busy-wait politely while the ring is full.
-                loop {
-                    if feeder_stop.load(Ordering::Relaxed) {
-                        break 'outer;
-                    }
-                    if producer.slots() >= 2 {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-                let _ = producer.push(block.left[i]);
-                let _ = producer.push(block.right[i]);
-            }
-            written += take;
-        }
+        run_feeder(
+            graph,
+            total_frames,
+            start_frame,
+            producer,
+            &feeder_stop,
+            &feeder_swap,
+        );
     });
 
     // Device callback: pop only. Underruns emit silence.
@@ -123,8 +198,10 @@ pub fn play(
         .map_err(|e| PlaybackError::Device(e.to_string()))?;
 
     // Control loop: report progress until everything audible has played.
+    let remaining = total - start_frame as u64;
     loop {
-        let done = played.load(Ordering::Relaxed).min(total);
+        let done = (start_frame as u64 + played.load(Ordering::Relaxed)).min(total);
+        let _ = remaining;
         on_progress((done, total));
         if done >= total {
             break;
@@ -161,6 +238,41 @@ mod tests {
     use musicos_music_core::{Note, Pattern};
     use musicos_project_model::{Command, TrackKind};
 
+    #[test]
+    fn feeder_honors_graph_swap_and_seek() {
+        use musicos_audio_graph::{Graph, Node, StereoBlock};
+
+        struct Constant(f32);
+        impl Node for Constant {
+            fn process(&mut self, _: usize, _: &[&StereoBlock], out: &mut StereoBlock) {
+                out.left.fill(self.0);
+                out.right.fill(self.0);
+            }
+        }
+        fn constant_graph(v: f32) -> musicos_audio_graph::CompiledGraph {
+            let mut g = Graph::new();
+            let n = g.add(Box::new(Constant(v)));
+            g.compile(n).unwrap()
+        }
+
+        let (producer, mut consumer) = rtrb::RingBuffer::<f32>::new(1 << 20);
+        let stop = AtomicBool::new(false);
+        let swap = SwapSlot::new();
+        // Install the replacement BEFORE running: first block boundary picks
+        // it up, so all audio comes from the swapped graph.
+        swap.install(constant_graph(0.5), 2048);
+        run_feeder(constant_graph(0.0), 2048, 1024, producer, &stop, &swap);
+
+        let mut samples = Vec::new();
+        while let Ok(s) = consumer.pop() {
+            samples.push(s);
+        }
+        // Seek honored: only (2048 - 1024) frames * 2 channels produced.
+        assert_eq!(samples.len(), 1024 * 2);
+        // Swap honored: output is the swapped graph's value.
+        assert!(samples.iter().all(|s| (*s - 0.5).abs() < 1e-6));
+    }
+
     /// Playback compilation shares the render pipeline, so total length and
     /// determinism are covered there; here we pin the compile path used by
     /// `play` (device tests need hardware and stay out of CI).
@@ -190,7 +302,7 @@ mod tests {
         })
         .unwrap();
         let opts = RenderOptions::default();
-        let (mut graph, total) = compile_project(&s, &opts).unwrap();
+        let (mut graph, total) = compile_project_streaming(&s, &opts).unwrap();
         // 2 quarters at 120 BPM = 1 s + synth tail + 0.5 s option tail.
         assert!(total > 48_000 && total < 48_000 * 3, "{total}");
         // The graph streams blocks from frame 0 without allocation surprises.
