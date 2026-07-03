@@ -192,3 +192,15 @@ For hosts without CLAP support (e.g. current FL Studio), wrap the `.clap`
 into a VST3 with the MIT-licensed [clap-wrapper](https://github.com/free-audio/clap-wrapper)
 — the standard route used by Surge and friends; no VST3 SDK license enters
 this repository.
+
+### Live MIDI into your DAW's own synths
+
+`music stream` plays the project as **live MIDI** through a virtual port —
+FL Studio's (or any DAW's) own instruments render the music in real time:
+
+1. macOS/Linux: just run `music stream` — a "MusicOS Out" port appears
+   (macOS: enable Audio MIDI Setup -> IAC driver if you prefer routing there).
+   Windows: create a port with loopMIDI, then `music stream --port loopMIDI`.
+2. In the DAW, set that port as the MIDI input for your instruments.
+   Each MusicOS track streams on its own MIDI channel (track 0 -> ch 1, ...).
+3. `music stream --from-bar 16` seeks; Ctrl-C stops (with all-notes-off).

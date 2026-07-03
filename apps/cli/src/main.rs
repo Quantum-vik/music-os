@@ -112,6 +112,20 @@ enum Command {
         /// The .wav file to analyze.
         file: PathBuf,
     },
+    /// Stream the project as live MIDI into DAW synths (virtual port).
+    Stream {
+        /// Connect to an existing output port containing this name
+        /// (required on Windows: use a loopMIDI port). Default: create a
+        /// virtual "MusicOS Out" port (macOS/Linux).
+        #[arg(long)]
+        port: Option<String>,
+        /// Start at this bar (4/4).
+        #[arg(long, default_value_t = 0)]
+        from_bar: u64,
+        /// List available MIDI output ports and exit.
+        #[arg(long)]
+        list_ports: bool,
+    },
     /// Run an AI production agent over the project (subscription or API).
     Ai {
         /// What you want done, in plain language.
@@ -323,6 +337,44 @@ fn run(cli: &Cli, config: &musicos_config::Config) -> anyhow::Result<Value> {
                 "stems_dir": stems.as_ref().map(|s| s.display().to_string()),
             }),
         ),
+        Command::Stream {
+            port,
+            from_bar,
+            list_ports,
+        } => {
+            if *list_ports {
+                let ports = musicos_midi_stream::output_ports()?;
+                return Ok(json!({
+                    "ports": ports,
+                    "summary": if ports.is_empty() {
+                        "no MIDI output ports found".to_string()
+                    } else {
+                        ports.join("\n")
+                    },
+                }));
+            }
+            let path = resolve_project(cli.project.as_deref())?;
+            let state = musicos_storage::BundleStore::open(&path)?.load_state()?;
+            let output = port.clone().map_or_else(
+                || musicos_midi_stream::Output::Virtual("MusicOS Out".into()),
+                musicos_midi_stream::Output::Named,
+            );
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let ctrlc_stop = std::sync::Arc::clone(&stop);
+            let _ = ctrlc::set_handler(move || {
+                ctrlc_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            });
+            eprintln!("streaming (Ctrl-C to stop)...");
+            let mut last = 0usize;
+            musicos_midi_stream::stream(&state, *from_bar, &output, &stop, |sent, total| {
+                if sent == total || sent - last >= 16 {
+                    eprint!("\r{sent}/{total} events");
+                    last = sent;
+                }
+            })?;
+            eprintln!();
+            Ok(json!({ "summary": "stream finished" }))
+        }
         Command::Analyze { file } => {
             let a = musicos_render::analyze_wav(file)?;
             Ok(json!({

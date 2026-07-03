@@ -38,6 +38,7 @@ LAYERS = {
     "musicos-project-service": 3,
     "musicos-storage": 3,
     "musicos-render": 3,
+    "musicos-midi-stream": 3,
     "musicos-audio-engine": 3,
     "musicos-plugin-host": 3,
     "musicos-ai-runtime": 3,

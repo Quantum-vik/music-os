@@ -1,0 +1,21 @@
+[package]
+name = "musicos-midi-stream"
+description = "Live MIDI streaming of a project into DAW synths via a virtual MIDI port."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+midir = { workspace = true }
+musicos-core-types = { workspace = true }
+musicos-project-model = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+musicos-music-core = { workspace = true }
+
+[lints]
+workspace = true
