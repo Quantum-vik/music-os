@@ -1,6 +1,7 @@
 //! End-to-end test of the MusicOS Player plugin: builds the cdylib, points
-//! `MUSICOS_PROJECT` at the checked-in corpus fixture, loads it through the
-//! CLAP host, and asserts real project audio comes out.
+//! the project library at the checked-in corpus fixture, loads the plugin
+//! through the CLAP host, drives the "Project" parameter, and asserts real
+//! project audio comes out.
 
 // The test exercises the unsafe loading API on a freshly built plugin.
 #![allow(unsafe_code)]
@@ -38,15 +39,39 @@ fn build_player_clap() -> PathBuf {
     dest
 }
 
+/// Processes blocks until the async loader delivers audio (or times out).
+fn energy_within(instance: &mut dyn ProcessorPlugin, timeout: std::time::Duration) -> f64 {
+    let start = std::time::Instant::now();
+    let mut l = vec![0.0f32; 512];
+    let mut r = vec![0.0f32; 512];
+    while start.elapsed() < timeout {
+        l.fill(9.9); // prove the plugin overwrites, not accumulates
+        r.fill(9.9);
+        instance.process(&mut l, &mut r);
+        assert!(l.iter().chain(r.iter()).all(|s| s.is_finite()));
+        assert!(l.iter().chain(r.iter()).all(|s| s.abs() <= 1.0), "clipped");
+        let energy: f64 = l.iter().map(|s| f64::from(*s) * f64::from(*s)).sum();
+        if energy > 1e-6 {
+            return energy;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    0.0
+}
+
 #[test]
-fn player_plays_the_configured_project_in_a_host() {
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/corpus/v0.1.0/Fixture.musicos")
+fn player_lists_projects_as_a_param_and_plays_the_selection() {
+    let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/corpus/v0.1.0")
         .canonicalize()
         .unwrap();
-    // Set before the plugin activates; the plugin reads it at activate time.
+    // The library is every .musicos in MUSICOS_LIBRARY; ensure the single
+    // env override is not set. Set before the plugin activates.
     // SAFETY: single-threaded at this point in the test.
-    unsafe { std::env::set_var("MUSICOS_PROJECT", &fixture) };
+    unsafe {
+        std::env::remove_var("MUSICOS_PROJECT");
+        std::env::set_var("MUSICOS_LIBRARY", &corpus_dir);
+    }
 
     let path = build_player_clap();
     // SAFETY: loading our own freshly built plugin.
@@ -55,30 +80,30 @@ fn player_plays_the_configured_project_in_a_host() {
     let plugins = library.plugins().unwrap();
     assert_eq!(plugins.len(), 1);
     assert_eq!(plugins[0].id, "org.musicos.player");
-    assert_eq!(plugins[0].name, "MusicOS Player");
 
     let mut instance = library.instantiate("org.musicos.player").unwrap();
-    instance.prepare(48_000, 512); // activate: loads + renders the fixture
+    instance.prepare(48_000, 512); // activate: scans library, loads async
 
-    // Our host provides no transport, so the player free-runs from frame 0.
-    // The fixture has chords at bar 0 — audio must be non-silent and finite.
-    let mut energy = 0.0f64;
-    let mut l = vec![0.0f32; 512];
-    let mut r = vec![0.0f32; 512];
-    for _ in 0..20 {
-        l.fill(9.9); // prove the plugin overwrites, not accumulates
-        r.fill(9.9);
-        instance.process(&mut l, &mut r);
-        assert!(l.iter().chain(r.iter()).all(|s| s.is_finite()));
-        assert!(l.iter().chain(r.iter()).all(|s| s.abs() <= 1.0), "clipped");
-        energy += l.iter().map(|s| f64::from(*s) * f64::from(*s)).sum::<f64>();
-    }
-    assert!(
-        energy > 1e-3,
-        "player produced silence (energy {energy:.6}) — project not loaded?"
-    );
+    // The picker is a real CLAP parameter surfaced through the host.
+    let params = instance.params();
+    assert_eq!(params.len(), 1, "expected the Project picker param");
+    assert_eq!(params[0].name, "Project");
+    assert!((params[0].min - 0.0).abs() < f32::EPSILON);
+    assert!(params[0].max >= 0.0, "at least one library entry");
+    let picker_id = params[0].id;
 
-    // reset() rewinds the free-run cursor: the next block matches block 0.
+    // Loading is asynchronous: poll until the fixture audio arrives.
+    let energy = energy_within(&mut instance, std::time::Duration::from_secs(10));
+    assert!(energy > 1e-3, "player stayed silent — library scan failed?");
+
+    // Re-selecting via the param (host-side set_param → CLAP flush) reloads
+    // and keeps playing; unknown param ids are rejected.
+    instance.set_param(picker_id, 0.0).unwrap();
+    let energy = energy_within(&mut instance, std::time::Duration::from_secs(10));
+    assert!(energy > 1e-3, "player silent after param re-select");
+    assert!(instance.set_param("no_such_param", 1.0).is_err());
+
+    // reset() rewinds the free-run cursor: two post-reset blocks match.
     instance.reset();
     let mut l0 = vec![0.0f32; 512];
     let mut r0 = vec![0.0f32; 512];

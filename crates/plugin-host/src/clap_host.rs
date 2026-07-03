@@ -18,7 +18,11 @@ use std::path::Path;
 
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
-use clap_sys::events::{clap_event_header, clap_input_events, clap_output_events};
+use clap_sys::events::{
+    clap_event_header, clap_event_param_value, clap_input_events, clap_output_events,
+    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_PARAM_VALUE,
+};
+use clap_sys::ext::params::{clap_param_info, clap_plugin_params, CLAP_EXT_PARAMS};
 use clap_sys::factory::plugin_factory::{clap_plugin_factory, CLAP_PLUGIN_FACTORY_ID};
 use clap_sys::host::clap_host;
 use clap_sys::plugin::clap_plugin;
@@ -239,9 +243,13 @@ impl ClapLibrary {
             }
             return Err(ClapHostError::Refused("plugin.init returned false"));
         }
+        let params_ext = unsafe { (*plugin).get_extension }.map_or(std::ptr::null(), |get| {
+            unsafe { get(plugin, CLAP_EXT_PARAMS.as_ptr()) }.cast::<clap_plugin_params>()
+        });
         Ok(ClapInstance {
             plugin,
             info,
+            params_ext,
             active: false,
             scratch_l: Vec::new(),
             scratch_r: Vec::new(),
@@ -253,6 +261,7 @@ impl ClapLibrary {
 pub struct ClapInstance {
     plugin: *const clap_plugin,
     info: ClapPluginInfo,
+    params_ext: *const clap_plugin_params,
     active: bool,
     scratch_l: Vec<f32>,
     scratch_r: Vec<f32>,
@@ -284,6 +293,46 @@ impl ClapInstance {
     }
 }
 
+/// A one-event input list for parameter flushes.
+struct OneParamEvent(clap_event_param_value);
+
+unsafe extern "C" fn one_event_size(list: *const clap_input_events) -> u32 {
+    u32::from(!unsafe { (*list).ctx }.is_null())
+}
+unsafe extern "C" fn one_event_get(
+    list: *const clap_input_events,
+    index: u32,
+) -> *const clap_event_header {
+    if index == 0 {
+        unsafe { (*list).ctx }
+            .cast::<OneParamEvent>()
+            .cast::<clap_event_header>()
+    } else {
+        std::ptr::null()
+    }
+}
+
+impl ClapInstance {
+    fn clap_params(&self) -> Vec<clap_param_info> {
+        let ext = self.params_ext;
+        if ext.is_null() {
+            return Vec::new();
+        }
+        let (Some(count), Some(get_info)) = (unsafe { (*ext).count }, unsafe { (*ext).get_info })
+        else {
+            return Vec::new();
+        };
+        let mut infos = Vec::new();
+        for index in 0..unsafe { count(self.plugin) } {
+            let mut info = unsafe { std::mem::zeroed::<clap_param_info>() };
+            if unsafe { get_info(self.plugin, index, &raw mut info) } {
+                infos.push(info);
+            }
+        }
+        infos
+    }
+}
+
 impl ProcessorPlugin for ClapInstance {
     fn descriptor(&self) -> PluginDescriptor {
         // ProcessorPlugin descriptors are &'static (native plugins embed
@@ -298,10 +347,66 @@ impl ProcessorPlugin for ClapInstance {
         }
     }
 
-    fn set_param(&mut self, id: &str, _value: f32) -> Result<(), PluginError> {
-        // Parameter surfacing arrives with the CLAP params-extension
-        // milestone; until then every id is unknown.
-        Err(PluginError::UnknownParam(id.to_string()))
+    fn params(&self) -> Vec<musicos_plugin_api::ParamInfo> {
+        self.clap_params()
+            .iter()
+            .map(|info| {
+                let name = unsafe { CStr::from_ptr(info.name.as_ptr()) }
+                    .to_string_lossy()
+                    .into_owned();
+                musicos_plugin_api::ParamInfo {
+                    id: Box::leak(info.id.to_string().into_boxed_str()),
+                    name: Box::leak(name.into_boxed_str()),
+                    #[allow(clippy::cast_possible_truncation)]
+                    min: info.min_value as f32,
+                    #[allow(clippy::cast_possible_truncation)]
+                    max: info.max_value as f32,
+                    #[allow(clippy::cast_possible_truncation)]
+                    default: info.default_value as f32,
+                }
+            })
+            .collect()
+    }
+
+    fn set_param(&mut self, id: &str, value: f32) -> Result<(), PluginError> {
+        let Some(info) = self
+            .clap_params()
+            .into_iter()
+            .find(|i| i.id.to_string() == id)
+        else {
+            return Err(PluginError::UnknownParam(id.to_string()));
+        };
+        let flush = if self.params_ext.is_null() {
+            None
+        } else {
+            unsafe { (*self.params_ext).flush }
+        };
+        let Some(flush) = flush else {
+            return Err(PluginError::UnknownParam(id.to_string()));
+        };
+        let mut event = OneParamEvent(clap_event_param_value {
+            header: clap_event_header {
+                size: std::mem::size_of::<clap_event_param_value>() as u32,
+                time: 0,
+                space_id: CLAP_CORE_EVENT_SPACE_ID,
+                type_: CLAP_EVENT_PARAM_VALUE,
+                flags: 0,
+            },
+            param_id: info.id,
+            cookie: info.cookie,
+            note_id: -1,
+            port_index: -1,
+            channel: -1,
+            key: -1,
+            value: f64::from(value),
+        });
+        let list = clap_input_events {
+            ctx: (&raw mut event).cast(),
+            size: Some(one_event_size),
+            get: Some(one_event_get),
+        };
+        unsafe { flush(self.plugin, &raw const list, &raw const OUT_EVENTS.0) };
+        Ok(())
     }
 
     fn prepare(&mut self, sample_rate: u32, max_block: usize) {
