@@ -278,6 +278,8 @@ pub enum DrumStyle {
     FourOnFloor,
     /// Sparse, swung hats and ghost snares.
     LoFi,
+    /// Euclidean kick/hat grid (Bjorklund) with backbeat snare.
+    Euclidean,
 }
 
 impl DrumStyle {
@@ -290,6 +292,7 @@ impl DrumStyle {
             "basic" | "rock" => Ok(DrumStyle::Basic),
             "four_on_floor" | "house" => Ok(DrumStyle::FourOnFloor),
             "lofi" | "lo-fi" => Ok(DrumStyle::LoFi),
+            "euclidean" => Ok(DrumStyle::Euclidean),
             other => Err(other.to_string()),
         }
     }
@@ -341,6 +344,42 @@ pub fn generate_drums(bars: usize, style: DrumStyle, seed: Seed) -> Pattern {
                 }
                 hit(&mut notes, SNARE, s + PPQ, 98);
                 hit(&mut notes, SNARE, s + PPQ * 3, 98);
+            }
+            DrumStyle::Euclidean => {
+                // Kick on E(16,5), hats on E(16,11), seeded rotations; snare
+                // keeps the human anchor on beats 2 and 4.
+                let sixteenth = PPQ / 4;
+                let kick_rot = rng.index(16);
+                let hat_rot = rng.index(16);
+                for (i, on) in musicos_rhythm::euclidean(16, 5, kick_rot)
+                    .iter()
+                    .enumerate()
+                {
+                    if *on {
+                        hit(
+                            &mut notes,
+                            KICK,
+                            s + i64::try_from(i).expect("16 steps") * sixteenth,
+                            108,
+                        );
+                    }
+                }
+                for (i, on) in musicos_rhythm::euclidean(16, 11, hat_rot)
+                    .iter()
+                    .enumerate()
+                {
+                    if *on {
+                        let vel = 58 + i32::try_from(rng.in_range(14)).expect("small");
+                        hit(
+                            &mut notes,
+                            HAT,
+                            s + i64::try_from(i).expect("16 steps") * sixteenth,
+                            vel,
+                        );
+                    }
+                }
+                hit(&mut notes, SNARE, s + PPQ, 100);
+                hit(&mut notes, SNARE, s + PPQ * 3, 100);
             }
             DrumStyle::LoFi => {
                 hit(&mut notes, KICK, s, 100);
@@ -473,7 +512,12 @@ mod tests {
 
     #[test]
     fn drums_are_deterministic_and_land_on_the_grid() {
-        for style in [DrumStyle::Basic, DrumStyle::FourOnFloor, DrumStyle::LoFi] {
+        for style in [
+            DrumStyle::Basic,
+            DrumStyle::FourOnFloor,
+            DrumStyle::LoFi,
+            DrumStyle::Euclidean,
+        ] {
             let a = generate_drums(4, style, Seed(5));
             let b = generate_drums(4, style, Seed(5));
             assert_eq!(a, b);

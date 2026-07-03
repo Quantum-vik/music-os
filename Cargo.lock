@@ -977,11 +977,13 @@ dependencies = [
  "musicos-ai-providers",
  "musicos-ai-runtime",
  "musicos-audio-engine",
+ "musicos-config",
  "musicos-core-types",
  "musicos-midi",
  "musicos-music-core",
  "musicos-project-model",
  "musicos-storage",
+ "musicos-telemetry",
  "musicos-tools",
  "serde_json",
 ]
@@ -993,6 +995,7 @@ dependencies = [
  "musicos-core-types",
  "musicos-harmony",
  "musicos-music-core",
+ "musicos-rhythm",
 ]
 
 [[package]]

@@ -12,6 +12,7 @@ publish.workspace = true
 musicos-core-types = { workspace = true }
 musicos-harmony = { workspace = true }
 musicos-music-core = { workspace = true }
+musicos-rhythm = { workspace = true }
 
 [lints]
 workspace = true

@@ -786,7 +786,7 @@ struct GenerateDrumsInput {
     /// Number of bars (4/4). Default 8.
     #[serde(default)]
     bars: Option<usize>,
-    /// Style: `basic` | `four_on_floor` | `lofi`. Default "basic".
+    /// Style: `basic` | `four_on_floor` | `lofi` | `euclidean`. Default "basic".
     #[serde(default)]
     style: Option<String>,
     /// Random seed. Default 0.
@@ -807,7 +807,7 @@ impl Tool for GenerateDrums {
         ToolSpec {
             name: "generate_drums",
             description: "Compose a drum pattern (GM keys: kick 36, snare 38, hat 42) \
-                          on a new track. Styles: basic, four_on_floor, lofi.",
+                          on a new track. Styles: basic, four_on_floor, lofi, euclidean.",
             params_schema: schema::<GenerateDrumsInput>(),
         }
     }

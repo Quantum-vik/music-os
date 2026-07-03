@@ -37,6 +37,7 @@ criterion = "0.5"
 musicos-core-types = { path = "crates/core-types" }
 musicos-music-core = { path = "crates/music-core" }
 musicos-harmony = { path = "crates/harmony" }
+musicos-rhythm = { path = "crates/rhythm" }
 musicos-composition = { path = "crates/composition" }
 musicos-arrangement = { path = "crates/arrangement" }
 musicos-timeline = { path = "crates/timeline" }
@@ -53,6 +54,8 @@ musicos-mcp-server = { path = "crates/mcp-server" }
 musicos-ai-runtime = { path = "crates/ai-runtime" }
 musicos-ai-providers = { path = "crates/ai-providers" }
 musicos-project-service = { path = "crates/project-service" }
+musicos-config = { path = "crates/config" }
+musicos-telemetry = { path = "crates/telemetry" }
 
 [workspace.lints.rust]
 missing_docs = "deny"

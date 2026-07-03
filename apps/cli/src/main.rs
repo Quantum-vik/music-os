@@ -32,6 +32,9 @@ struct Cli {
     /// Project bundle directory (defaults to the single *.musicos in cwd).
     #[arg(short = 'P', long, global = true)]
     project: Option<PathBuf>,
+    /// Increase log verbosity (-v info, -vv debug, -vvv trace).
+    #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count, global = true)]
+    verbose: u8,
     #[command(subcommand)]
     command: Command,
 }
@@ -90,23 +93,24 @@ enum Command {
         /// Output .wav path.
         #[arg(short, long, default_value = "render.wav")]
         output: PathBuf,
-        /// Sample rate in Hz.
-        #[arg(long, default_value_t = 48_000)]
-        rate: u32,
+        /// Sample rate in Hz. Defaults to config `render.sample_rate`.
+        #[arg(long)]
+        rate: Option<u32>,
     },
     /// Run an AI production agent over the project (subscription or API).
     Ai {
         /// What you want done, in plain language.
         brief: String,
         /// Provider: subscription (Claude Code, no API keys) | api | auto.
-        #[arg(long, default_value = "auto")]
-        provider: String,
-        /// Model id for api mode.
-        #[arg(long, default_value = "claude-opus-4-8")]
-        model: String,
-        /// Maximum model round-trips (api mode).
-        #[arg(long, default_value_t = 16)]
-        max_turns: u32,
+        /// Defaults to config `ai.provider`, else auto.
+        #[arg(long)]
+        provider: Option<String>,
+        /// Model id for api mode. Defaults to config `ai.model`.
+        #[arg(long)]
+        model: Option<String>,
+        /// Maximum model round-trips (api mode). Defaults to config `ai.max_turns`.
+        #[arg(long)]
+        max_turns: Option<u32>,
     },
     /// Call any registered tool by name with a JSON input (full CLI/MCP parity).
     Call {
@@ -193,7 +197,14 @@ enum MidiCmd {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    match run(&cli) {
+    musicos_telemetry::init(cli.verbose);
+    let loaded = musicos_config::Config::load(cli.project.as_deref());
+    if cli.verbose > 0 {
+        for warning in &loaded.warnings {
+            eprintln!("[musicos] config: {warning}");
+        }
+    }
+    match run(&cli, &loaded.config) {
         Ok(report) => {
             if cli.json {
                 println!("{report}");
@@ -223,7 +234,7 @@ fn main() -> ExitCode {
 }
 
 #[allow(clippy::too_many_lines)] // one arm per subcommand; commands migrate onto the registry over time
-fn run(cli: &Cli) -> anyhow::Result<Value> {
+fn run(cli: &Cli, config: &musicos_config::Config) -> anyhow::Result<Value> {
     match &cli.command {
         Command::Init { name, dir } => {
             let dir = dir
@@ -279,7 +290,10 @@ fn run(cli: &Cli) -> anyhow::Result<Value> {
         Command::Render { output, rate } => call_tool(
             cli,
             "render_song",
-            json!({ "output": output.display().to_string(), "sample_rate": rate }),
+            json!({
+                "output": output.display().to_string(),
+                "sample_rate": rate.unwrap_or(config.render.sample_rate),
+            }),
         ),
         Command::Ai {
             brief,
@@ -288,6 +302,12 @@ fn run(cli: &Cli) -> anyhow::Result<Value> {
             max_turns,
         } => {
             let path = resolve_project(cli.project.as_deref())?;
+            let provider = provider
+                .clone()
+                .or_else(|| config.ai.provider.clone())
+                .unwrap_or_else(|| "auto".to_string());
+            let model = model.clone().unwrap_or_else(|| config.ai.model.clone());
+            let max_turns = max_turns.unwrap_or(config.ai.max_turns);
             match Provider::resolve(Some(provider.as_str()))? {
                 Provider::Subscription => {
                     let runner = SubscriptionRunner {
@@ -301,13 +321,14 @@ fn run(cli: &Cli) -> anyhow::Result<Value> {
                 Provider::Api => {
                     let backend = AnthropicBackend::from_env()?;
                     let mut ctx = ProjectCtx::open(&path, "agent:api")?;
-                    let config = AgentConfig {
-                        model: model.clone(),
-                        max_turns: *max_turns,
+                    let agent_config = AgentConfig {
+                        model,
+                        max_turns,
                         ..AgentConfig::default()
                     };
-                    eprintln!("[musicos] provider: api (model {model})");
-                    let outcome = run_agent(&backend, &Registry::new(), &mut ctx, &config, brief)?;
+                    eprintln!("[musicos] provider: api (model {})", agent_config.model);
+                    let outcome =
+                        run_agent(&backend, &Registry::new(), &mut ctx, &agent_config, brief)?;
                     Ok(json!({
                         "reply": outcome.reply,
                         "turns": outcome.turns,
