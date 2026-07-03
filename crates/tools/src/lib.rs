@@ -429,6 +429,9 @@ fn summarize_command(cmd: &Command) -> String {
         Command::UnplaceClip { clip, at } => format!("unplace clip {} from {}", clip.0, at.0),
         Command::AddMarker { at, name } => format!("add marker '{name}' at {}", at.0),
         Command::RemoveMarker { at, name } => format!("remove marker '{name}' at {}", at.0),
+        Command::SetTrackInstrument { track, instrument } => {
+            format!("set track {} instrument to {:?}", track.0, instrument)
+        }
         Command::SetTrackMute { track, muted } => {
             format!(
                 "{} track {}",
@@ -552,6 +555,67 @@ impl Tool for RenderSong {
                     format!(" + {} stem(s)", stems.len())
                 },
                 input.output
+            ),
+        }))
+    }
+}
+
+// --- instrument assignment ---------------------------------------------------------
+
+/// Input for `set_track_instrument`.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct SetTrackInstrumentInput {
+    /// Target track id.
+    track_id: u64,
+    /// Instrument name ("guitar", "electric piano", "strings", "drums", ...)
+    /// or GM program number 0-127 (128 = drum kit). Empty string resets to
+    /// the built-in synth.
+    instrument: String,
+}
+
+struct SetTrackInstrument;
+
+impl Tool for SetTrackInstrument {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "set_track_instrument",
+            description: "Choose the sound a track renders with: real sampled \
+                          instruments by name (guitar, piano, strings, bass, drums, sax, \
+                          ...) via the installed soundfont, or GM program number. \
+                          Requires a soundfont (music sounds install); without one, \
+                          rendering falls back to the built-in synth.",
+            params_schema: schema::<SetTrackInstrumentInput>(),
+        }
+    }
+
+    fn call(&self, ctx: &mut ProjectCtx, input: Value) -> Result<Value, ToolError> {
+        let input: SetTrackInstrumentInput = parse(input)?;
+        let instrument = if input.instrument.trim().is_empty() {
+            None
+        } else {
+            Some(
+                musicos_instruments::soundfont::program_for_name(&input.instrument).ok_or_else(
+                    || {
+                        ToolError::invalid(format!(
+                            "unknown instrument '{}' — try guitar, piano, strings, bass, \
+                             drums, sax, flute, organ, pad, or a GM number 0-128",
+                            input.instrument
+                        ))
+                    },
+                )?,
+            )
+        };
+        ctx.commit(Command::SetTrackInstrument {
+            track: musicos_core_types::TrackId(input.track_id),
+            instrument,
+        })?;
+        Ok(json!({
+            "track_id": input.track_id,
+            "program": instrument,
+            "summary": format!(
+                "track {} instrument: {}",
+                input.track_id,
+                if instrument.is_none() { "built-in synth" } else { input.instrument.trim() }
             ),
         }))
     }
@@ -768,6 +832,24 @@ fn parse_progression(symbols: &[String]) -> Result<Vec<Chord>, ToolError> {
 }
 
 /// Creates a MIDI track holding one clip with the pattern; returns ids.
+/// Applies an optional instrument name to a freshly generated track.
+fn apply_instrument(
+    ctx: &mut ProjectCtx,
+    track_id: u64,
+    instrument: Option<&str>,
+) -> Result<(), ToolError> {
+    let Some(name) = instrument else {
+        return Ok(());
+    };
+    let program = musicos_instruments::soundfont::program_for_name(name)
+        .ok_or_else(|| ToolError::invalid(format!("unknown instrument '{name}'")))?;
+    ctx.commit(Command::SetTrackInstrument {
+        track: musicos_core_types::TrackId(track_id),
+        instrument: Some(program),
+    })?;
+    Ok(())
+}
+
 fn insert_generated(
     ctx: &mut ProjectCtx,
     track_name: &str,
@@ -793,6 +875,10 @@ fn insert_generated(
 /// Input for `generate_chords`.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct GenerateChordsInput {
+    /// Instrument name (e.g. "guitar", "piano", "drums") or GM number to
+    /// render this track with (needs an installed soundfont). Optional.
+    #[serde(default)]
+    instrument: Option<String>,
     /// Key root note name, e.g. "C", "F#", "Bb".
     key: String,
     /// Scale: `major` | `minor` | `harmonic_minor` | `melodic_minor` |
@@ -842,6 +928,7 @@ impl Tool for GenerateChords {
             pattern,
             input.at.unwrap_or(0),
         )?;
+        apply_instrument(ctx, track_id, input.instrument.as_deref())?;
         Ok(json!({
             "progression": symbols,
             "track_id": track_id,
@@ -857,6 +944,10 @@ impl Tool for GenerateChords {
 /// Input for `generate_melody`.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct GenerateMelodyInput {
+    /// Instrument name (e.g. "guitar", "piano", "drums") or GM number to
+    /// render this track with (needs an installed soundfont). Optional.
+    #[serde(default)]
+    instrument: Option<String>,
     /// Chord symbols, one per bar, e.g. `["Am","F","C","G"]`. Omit to derive
     /// the progression from `key`/`scale`/`bars`/`seed` — identical to what
     /// `generate_chords` produces with the same inputs.
@@ -914,6 +1005,7 @@ impl Tool for GenerateMelody {
             pattern,
             input.at.unwrap_or(0),
         )?;
+        apply_instrument(ctx, track_id, input.instrument.as_deref())?;
         Ok(json!({
             "track_id": track_id,
             "notes": notes,
@@ -926,6 +1018,10 @@ impl Tool for GenerateMelody {
 /// Input for `generate_bass`.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct GenerateBassInput {
+    /// Instrument name (e.g. "guitar", "piano", "drums") or GM number to
+    /// render this track with (needs an installed soundfont). Optional.
+    #[serde(default)]
+    instrument: Option<String>,
     /// Chord symbols, one per bar. Omit to derive from
     /// `key`/`scale`/`bars`/`seed` (matches `generate_chords`).
     #[serde(default)]
@@ -985,6 +1081,7 @@ impl Tool for GenerateBass {
             pattern,
             input.at.unwrap_or(0),
         )?;
+        apply_instrument(ctx, track_id, input.instrument.as_deref())?;
         Ok(json!({
             "track_id": track_id,
             "notes": notes,
@@ -996,6 +1093,10 @@ impl Tool for GenerateBass {
 /// Input for `generate_drums`.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct GenerateDrumsInput {
+    /// Instrument name (e.g. "guitar", "piano", "drums") or GM number to
+    /// render this track with (needs an installed soundfont). Optional.
+    #[serde(default)]
+    instrument: Option<String>,
     /// Number of bars (4/4). Default 8.
     #[serde(default)]
     bars: Option<usize>,
@@ -1037,6 +1138,11 @@ impl Tool for GenerateDrums {
             "drums",
             pattern,
             input.at.unwrap_or(0),
+        )?;
+        apply_instrument(
+            ctx,
+            track_id,
+            Some(input.instrument.as_deref().unwrap_or("drums")),
         )?;
         Ok(json!({
             "track_id": track_id,
@@ -1304,6 +1410,7 @@ impl Registry {
                 Box::new(ImportMidi),
                 Box::new(SetTempo),
                 Box::new(RenderSong),
+                Box::new(SetTrackInstrument),
                 Box::new(FlControl),
                 Box::new(FlRecordSong),
                 Box::new(SetTrackMix),

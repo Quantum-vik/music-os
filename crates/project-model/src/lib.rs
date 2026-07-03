@@ -202,6 +202,10 @@ pub struct Track {
     /// Mix settings.
     #[serde(default)]
     pub mix: ChannelStrip,
+    /// General MIDI program for rendering (128 = percussion kit); `None`
+    /// uses the built-in synth voice.
+    #[serde(default)]
+    pub instrument: Option<u8>,
     /// Insert effects, processed in order before gain/pan.
     #[serde(default)]
     pub inserts: Vec<Device>,
@@ -306,6 +310,7 @@ impl ProjectState {
                         name,
                         kind,
                         mix: ChannelStrip::default(),
+                        instrument: None,
                         inserts: Vec::new(),
                         placements: Vec::new(),
                     },
@@ -440,6 +445,17 @@ impl ProjectState {
                     track,
                     from: t.mix.pan,
                     to: pan,
+                }])
+            }
+            Command::SetTrackInstrument { track, instrument } => {
+                if instrument.is_some_and(|p| p > 128) {
+                    return Err(DomainError::OutOfRange("instrument", 0.0, 128.0));
+                }
+                let t = self.track(track)?;
+                Ok(vec![Event::TrackInstrumentSet {
+                    track,
+                    from: t.instrument,
+                    to: instrument,
                 }])
             }
             Command::SetTrackMute { track, muted } => {
@@ -585,6 +601,9 @@ impl ProjectState {
             }
             Event::TrackPanSet { track, to, .. } => {
                 self.track_mut(*track)?.mix.pan = *to;
+            }
+            Event::TrackInstrumentSet { track, to, .. } => {
+                self.track_mut(*track)?.instrument = *to;
             }
             Event::TrackMuteSet { track, to, .. } => {
                 self.track_mut(*track)?.mix.muted = *to;
@@ -751,6 +770,13 @@ pub enum Command {
         pan: f32,
     },
     /// Mute or unmute a track.
+    SetTrackInstrument {
+        /// Target track.
+        track: TrackId,
+        /// GM program 0..=128 (128 = percussion), or None for built-in.
+        instrument: Option<u8>,
+    },
+    /// Set a track's mute state.
     SetTrackMute {
         /// Target track.
         track: TrackId,
@@ -900,6 +926,15 @@ pub enum Event {
         /// New pan.
         to: f32,
     },
+    /// A track's rendering instrument changed.
+    TrackInstrumentSet {
+        /// Target track.
+        track: TrackId,
+        /// Previous program.
+        from: Option<u8>,
+        /// New program.
+        to: Option<u8>,
+    },
     /// A track's mute state changed.
     TrackMuteSet {
         /// Target track.
@@ -1047,6 +1082,11 @@ impl Event {
                 to: *from,
             },
             Event::TrackPanSet { track, from, to } => Event::TrackPanSet {
+                track: *track,
+                from: *to,
+                to: *from,
+            },
+            Event::TrackInstrumentSet { track, from, to } => Event::TrackInstrumentSet {
                 track: *track,
                 from: *to,
                 to: *from,

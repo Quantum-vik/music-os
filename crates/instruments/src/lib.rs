@@ -6,6 +6,8 @@
 //! runs inside the real-time graph (`docs/04` §5) lands with the engine.
 //! The sampler follows in a later milestone.
 
+pub mod soundfont;
+
 use musicos_core_types::Pitch;
 
 /// Oscillator waveforms.

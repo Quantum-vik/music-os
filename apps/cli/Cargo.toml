@@ -25,7 +25,9 @@ musicos-midi = { workspace = true }
 musicos-plugin-host = { workspace = true }
 musicos-render = { workspace = true }
 musicos-midi-stream = { workspace = true }
+musicos-instruments = { workspace = true }
 ctrlc = "3"
+ureq = { workspace = true }
 musicos-music-core = { workspace = true }
 musicos-project-model = { workspace = true }
 musicos-storage = { workspace = true }

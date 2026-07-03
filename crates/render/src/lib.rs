@@ -208,6 +208,10 @@ pub fn compile_project(
 ) -> Result<(CompiledGraph, usize), RenderError> {
     let synth = SimpleSynth::default();
     let sr = opts.sample_rate;
+    // Real instrument sounds when a soundfont is installed (docs: `music
+    // sounds install`); tracks without an instrument keep the built-in
+    // synth so existing projects render unchanged.
+    let bank = musicos_instruments::soundfont::SoundBank::load_default();
 
     // Pre-render each MIDI track to mono and find the total length.
     let mut track_audio: Vec<(ChannelStrip, Vec<Device>, Vec<f32>)> = Vec::new();
@@ -226,20 +230,36 @@ pub fn compile_project(
             continue;
         }
         let mut mono = vec![0.0f32; end_of_track];
-        for placement in &track.placements {
-            let clip = &state.clips[&placement.clip];
-            for note in clip.pattern.notes() {
-                let start = sample_at(state, placement.at + note.start, sr);
-                let end = sample_at(state, placement.at + note.end(), sr);
-                let held = end.saturating_sub(start).max(1);
-                let gain = f32::from(note.velocity.get()) / 127.0;
-                for (i, s) in synth
-                    .render_note(note.pitch, gain, held, sr)
-                    .iter()
-                    .enumerate()
-                {
-                    if let Some(slot) = mono.get_mut(start + i) {
-                        *slot += s;
+        if let (Some(bank), Some(program)) = (&bank, track.instrument) {
+            let mut sampled = Vec::new();
+            for placement in &track.placements {
+                let clip = &state.clips[&placement.clip];
+                for note in clip.pattern.notes() {
+                    sampled.push(musicos_instruments::soundfont::SampledNote {
+                        on: sample_at(state, placement.at + note.start, sr),
+                        off: sample_at(state, placement.at + note.end(), sr),
+                        key: note.pitch.note,
+                        velocity: note.velocity.get(),
+                    });
+                }
+            }
+            mono = bank.render_track(sr, program, &sampled, end_of_track);
+        } else {
+            for placement in &track.placements {
+                let clip = &state.clips[&placement.clip];
+                for note in clip.pattern.notes() {
+                    let start = sample_at(state, placement.at + note.start, sr);
+                    let end = sample_at(state, placement.at + note.end(), sr);
+                    let held = end.saturating_sub(start).max(1);
+                    let gain = f32::from(note.velocity.get()) / 127.0;
+                    for (i, s) in synth
+                        .render_note(note.pitch, gain, held, sr)
+                        .iter()
+                        .enumerate()
+                    {
+                        if let Some(slot) = mono.get_mut(start + i) {
+                            *slot += s;
+                        }
                     }
                 }
             }

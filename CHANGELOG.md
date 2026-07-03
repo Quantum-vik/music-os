@@ -7,7 +7,12 @@ semantic versioning. Project format compatibility is governed separately by
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- Real instrument sounds: SoundFont (SF2) sampling via rustysynth —
+  `music sounds` installs GeneralUser GS (or any soundfont); tracks carry
+  a GM instrument (`set_track_instrument`, `instrument` on all
+  generators, name mapping like "guitar"/"strings"/"drums"); render and
+  stems play the samples, built-in synth remains the fallback.
 
 ## [0.1.4] - 2026-07-04
 

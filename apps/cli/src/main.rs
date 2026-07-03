@@ -112,6 +112,16 @@ enum Command {
         /// The .wav file to analyze.
         file: PathBuf,
     },
+    /// Install or inspect real instrument sounds (GM soundfont).
+    Sounds {
+        /// Download URL or local .sf2 path to install. Default: `GeneralUser GS`
+        /// (free, ~30 MB) from its official GitHub repository.
+        #[arg(long)]
+        source: Option<String>,
+        /// Only report the current soundfont status.
+        #[arg(long)]
+        status: bool,
+    },
     /// Stream the project as live MIDI into DAW synths (virtual port).
     Stream {
         /// Connect to an existing output port containing this name
@@ -337,6 +347,49 @@ fn run(cli: &Cli, config: &musicos_config::Config) -> anyhow::Result<Value> {
                 "stems_dir": stems.as_ref().map(|s| s.display().to_string()),
             }),
         ),
+        Command::Sounds { source, status } => {
+            let installed = musicos_instruments::soundfont::SoundBank::default_path();
+            if *status {
+                return Ok(json!({
+                    "installed": installed.as_ref().map(|p| p.display().to_string()),
+                    "summary": installed.map_or_else(
+                        || "no soundfont installed — run `music sounds` to get one".to_string(),
+                        |p| format!("soundfont: {}", p.display()),
+                    ),
+                }));
+            }
+            let home = std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .ok_or_else(|| anyhow::anyhow!("no home directory"))?;
+            let dest_dir = std::path::PathBuf::from(home).join(".musicos");
+            std::fs::create_dir_all(&dest_dir)?;
+            let dest = dest_dir.join("soundfont.sf2");
+            let source = source.clone().unwrap_or_else(|| {
+                "https://github.com/mrbumpy409/GeneralUser-GS/raw/main/GeneralUser-GS.sf2"
+                    .to_string()
+            });
+            if source.starts_with("http") {
+                eprintln!("downloading {source} (this can take a few minutes)...");
+                let response = ureq::get(&source).call()?;
+                let mut reader = response.into_reader();
+                let tmp = dest.with_extension("sf2.part");
+                let mut file = std::fs::File::create(&tmp)?;
+                std::io::copy(&mut reader, &mut file)?;
+                std::fs::rename(&tmp, &dest)?;
+            } else {
+                std::fs::copy(&source, &dest)?;
+            }
+            musicos_instruments::soundfont::SoundBank::load(&dest)
+                .map_err(|e| anyhow::anyhow!("downloaded file is not a usable soundfont: {e}"))?;
+            Ok(json!({
+                "installed": dest.display().to_string(),
+                "summary": format!(
+                    "soundfont installed at {} — tracks with instruments now render \
+                     with real sounds",
+                    dest.display()
+                ),
+            }))
+        }
         Command::Stream {
             port,
             from_bar,

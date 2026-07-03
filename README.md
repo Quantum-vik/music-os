@@ -237,3 +237,20 @@ into FL's piano roll.
 
 FL does not let scripts insert new plugin instances; keep a template
 project with your instruments loaded and the agent does the rest.
+
+### Real instrument sounds
+
+One command replaces the built-in beep-synth with sampled instruments:
+
+```
+music sounds                 # installs GeneralUser GS (free GM soundfont, ~30 MB)
+music sounds --status        # check what's installed
+music sounds --source my.sf2 # or bring your own soundfont
+```
+
+Then name instruments anywhere: generators take `"instrument": "guitar"`
+(or piano, strings, sax, drums, any GM name/number), `set_track_instrument`
+changes existing tracks, and the AI picks sounds itself: 
+`music ai "make a lofi loop with a warm electric guitar melody"`.
+Rendering and stems use the samples; live `play` preview currently keeps
+the built-in synth.
